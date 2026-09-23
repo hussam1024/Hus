@@ -1,0 +1,734 @@
+//@version=5
+// ════════════════════════════════════════════════════════════════════════════
+//  Unified Confluence Engine  [ICT · SMC · CRT · MTF]   —   "UCE"
+// ════════════════════════════════════════════════════════════════════════════
+//  منظومة تحليل واحدة متكاملة: الهيكل متعدد الفريمات + مناطق الاهتمام (OB / FVG /
+//  Supply-Demand) + السيولة (Sweeps / EQH-EQL / Round numbers) + مفاهيم ICT
+//  (Kill Zones / Judas / OTE / Premium-Discount) + نظرية مدى الشموع CRT.
+//  كل العوامل تُحسب داخليًا وتُدمج في "محرك دمج" بالنقاط، والمخرج الوحيد على الشارت:
+//      ▸ علامة BUY أو SELL      ▸ خط Stop Loss      ▸ خط Take Profit
+//
+//  ⚠️ إخلاء مسؤولية: هذا المؤشر أداة مساعدة في اتخاذ القرار فقط، وليس نصيحة مالية
+//  أو استثمارية. الأداء التاريخي (Backtest / إشارات سابقة على الشارت) لا يضمن أي
+//  نتائج مستقبلية. التداول ينطوي على مخاطر عالية وقد تخسر كامل رأس المال؛ استخدم
+//  إدارة مخاطر صارمة واختبر المؤشر على حساب تجريبي قبل أي استخدام حقيقي.
+// ════════════════════════════════════════════════════════════════════════════
+indicator("Unified Confluence Engine [ICT·SMC·CRT]", shorttitle = "UCE", overlay = true,
+     max_lines_count = 200, max_labels_count = 200, max_bars_back = 500)
+
+// ════════════════════════════════════════════════════════════════════════════
+// 0) الإعدادات (Inputs)
+// ════════════════════════════════════════════════════════════════════════════
+grpTF = "① Multi-Timeframe Structure"
+htfTF   = input.timeframe("240", "HTF bias timeframe (Daily / 4H)", group = grpTF)
+midTF   = input.timeframe("60",  "Mid timeframe (1H / 30m)", group = grpTF)
+mtfLen  = input.int(3, "HTF / Mid pivot length", minval = 1, maxval = 10, group = grpTF)
+mtfMode = input.string("Balanced", "MTF alignment gate", options = ["Strict", "Balanced", "Off"], group = grpTF,
+     tooltip = "Strict: HTF and Mid must both agree with the trade.\nBalanced: HTF must agree, Mid must not be opposite.\nOff: no hard gate (alignment is still scored).")
+
+grpST = "② Entry-TF Structure & POIs"
+swingLen  = input.int(5, "Swing pivot length (BOS / OB / OTE)", minval = 2, maxval = 20, group = grpST)
+intLen    = input.int(2, "Internal pivot length (entry trigger)", minval = 1, maxval = 5, group = grpST)
+obLook    = input.int(10, "Order-Block search lookback (bars)", minval = 3, maxval = 30, group = grpST)
+fvgMinAtr = input.float(0.15, "Min FVG size (× ATR)", minval = 0.0, step = 0.05, group = grpST)
+dispMult  = input.float(1.2, "Displacement candle body (× ATR)", minval = 0.3, step = 0.1, group = grpST)
+maxZones  = input.int(8, "Max stored zones per type", minval = 2, maxval = 30, group = grpST)
+
+grpLQ = "③ Liquidity"
+eqTolAtr    = input.float(0.10, "Equal Highs/Lows tolerance (× ATR)", minval = 0.01, step = 0.01, group = grpLQ)
+sweepWin    = input.int(12, "Sweep validity window (bars)", minval = 1, maxval = 100, group = grpLQ)
+poiWin      = input.int(20, "POI / OTE touch validity window (bars)", minval = 1, maxval = 200, group = grpLQ)
+useRound    = input.bool(true, "Use psychological round-number levels", group = grpLQ)
+roundStepIn = input.float(0.0, "Round-number step (0 = auto)", minval = 0.0, group = grpLQ)
+
+grpICT = "④ ICT · Sessions / Kill Zones"
+tz         = input.string("America/New_York", "Session time zone (IANA or UTC±X)", group = grpICT)
+sessFilter = input.string("Kill Zones only", "Session filter", options = ["Kill Zones only", "Off"], group = grpICT)
+useAsia    = input.bool(false, "Trade Asia / Tokyo", inline = "as", group = grpICT)
+asiaSess   = input.session("2000-0000", "", inline = "as", group = grpICT)
+useLon     = input.bool(true, "Trade London KZ", inline = "lo", group = grpICT)
+lonSess    = input.session("0200-0500", "", inline = "lo", group = grpICT)
+useNY      = input.bool(true, "Trade New York KZ", inline = "ny", group = grpICT)
+nySess     = input.session("0700-1000", "", inline = "ny", group = grpICT)
+oteLo      = input.float(0.62, "OTE fib — shallow", minval = 0.5, maxval = 0.9, step = 0.005, inline = "ote", group = grpICT)
+oteHi      = input.float(0.79, "deep", minval = 0.5, maxval = 0.95, step = 0.005, inline = "ote", group = grpICT)
+
+grpX = "⑤ Time Exclusions"
+exWeekend = input.bool(true, "Exclude weekend, Monday open & Friday close", group = grpX)
+monStart  = input.int(3, "Monday: no signals before hour", minval = 0, maxval = 23, group = grpX)
+friEnd    = input.int(12, "Friday: no signals from hour", minval = 0, maxval = 23, group = grpX)
+useBlack  = input.bool(false, "Blackout window (low liquidity)", inline = "bk", group = grpX)
+blackSess = input.session("1130-1330", "", inline = "bk", group = grpX)
+
+grpCRT = "⑥ Candle Range Theory"
+crtTF = input.timeframe("D", "CRT reference candle timeframe", group = grpCRT)
+
+grpSC = "⑦ Confluence Engine"
+threshold    = input.float(8.0, "Minimum score to fire a signal", minval = 0.5, step = 0.5, group = grpSC,
+     tooltip = "Maximum possible score with default weights = 17.5")
+requirePOI   = input.bool(true, "Require POI context (OB / FVG / S&D / OTE / CRT)", group = grpSC)
+confirmClose = input.bool(true, "Signal on bar close only (non-repainting)", group = grpSC)
+
+grpW = "⑧ Engine Weights"
+wHTF   = input.float(2.0, "HTF trend", step = 0.5, inline = "w1", group = grpW)
+wSeq   = input.float(0.5, "HTF HH-HL / LH-LL", step = 0.5, inline = "w1", group = grpW)
+wMid   = input.float(1.5, "Mid trend", step = 0.5, inline = "w2", group = grpW)
+wSweep = input.float(2.0, "Liquidity sweep", step = 0.5, inline = "w2", group = grpW)
+wPool  = input.float(1.0, "EQH/EQL · round pool", step = 0.5, inline = "w3", group = grpW)
+wOB    = input.float(1.5, "Order Block", step = 0.5, inline = "w3", group = grpW)
+wFresh = input.float(0.5, "Untested OB bonus", step = 0.5, inline = "w4", group = grpW)
+wFVG   = input.float(1.0, "FVG", step = 0.5, inline = "w4", group = grpW)
+wSD    = input.float(1.0, "Supply / Demand", step = 0.5, inline = "w5", group = grpW)
+wPD    = input.float(1.5, "Premium / Discount", step = 0.5, inline = "w5", group = grpW)
+wOTE   = input.float(1.0, "OTE", step = 0.5, inline = "w6", group = grpW)
+wKZ    = input.float(1.0, "Kill Zone", step = 0.5, inline = "w6", group = grpW)
+wJudas = input.float(1.0, "Judas Swing", step = 0.5, inline = "w7", group = grpW)
+wCRT   = input.float(1.5, "CRT", step = 0.5, inline = "w7", group = grpW)
+wDisp  = input.float(0.5, "Displacement trigger", step = 0.5, inline = "w8", group = grpW)
+
+grpRK = "⑨ Risk Management"
+minRR       = input.float(2.0, "Minimum Reward : Risk", minval = 1.0, step = 0.1, group = grpRK)
+slBufAtr    = input.float(0.20, "SL buffer beyond liquidity (× ATR)", minval = 0.0, step = 0.05, group = grpRK)
+maxRiskAtr  = input.float(4.0, "Skip trade if SL wider than (× ATR)", minval = 0.5, step = 0.5, group = grpRK)
+useFallback = input.bool(true, "If no liquidity target meets RR → fixed-RR target", group = grpRK)
+maxBars     = input.int(0, "Auto-close trade after N bars (0 = off)", minval = 0, group = grpRK)
+
+grpVS = "⑩ Visuals"
+showLines = input.bool(true, "Show SL / TP lines", group = grpVS)
+keepAfter = input.bool(false, "Keep SL / TP lines after the trade closes", group = grpVS)
+showPx    = input.bool(true, "Show SL / TP price tags", group = grpVS)
+colBuy    = input.color(#089981, "BUY", inline = "c1", group = grpVS)
+colSell   = input.color(#F23645, "SELL", inline = "c1", group = grpVS)
+colSL     = input.color(#F23645, "SL", inline = "c2", group = grpVS)
+colTP     = input.color(#2962FF, "TP", inline = "c2", group = grpVS)
+
+// ════════════════════════════════════════════════════════════════════════════
+// 1) أنواع البيانات والدوال المساعدة
+// ════════════════════════════════════════════════════════════════════════════
+// Zone: منطقة اهتمام (OB / FVG / Supply-Demand). tested = هل لُمست من قبل (Untested vs Tested)
+type Zone
+    float top
+    float btm
+    int   born
+    bool  tested = false
+
+// Liq: مستوى سيولة (قمة/قاع سوينغ غير مسحوب). eq = جزء من Equal Highs/Lows
+type Liq
+    float price
+    bool  eq
+    int   born
+
+// هل القيمة (رقم الشمعة) داخل نافذة الصلاحية؟
+inWin(int b, int w) =>
+    not na(b) and bar_index - b <= w
+
+// إضافة منطقة مع حد أقصى للعدد (الأحدث أولًا)
+f_push(array<Zone> zs, Zone z, int cap) =>
+    array.unshift(zs, z)
+    if array.size(zs) > cap
+        array.pop(zs)
+    array.size(zs)
+
+// مسح المناطق: رصد اللمس، تمييز اللمسة الأولى (Untested)، وحذف المناطق المُبطلة
+// bull = true  → مناطق طلب (السعر يهبط إليها)، الإبطال بإغلاق تحت القاع
+// bull = false → مناطق عرض (السعر يصعد إليها)، الإبطال بإغلاق فوق القمة
+f_scan(array<Zone> zs, bool bull) =>
+    bool  hit   = false
+    bool  fresh = false
+    float ext   = na
+    int   n     = array.size(zs)
+    if n > 0
+        for i = n - 1 to 0
+            Zone z = array.get(zs, i)
+            bool touch   = bar_index > z.born and low <= z.top and high >= z.btm
+            bool invalid = bull ? close < z.btm : close > z.top
+            if touch
+                hit := true
+                if not z.tested
+                    fresh    := true
+                    z.tested := true
+                ext := bull ? (na(ext) ? z.btm : math.min(ext, z.btm)) : (na(ext) ? z.top : math.max(ext, z.top))
+            if invalid
+                array.remove(zs, i)
+    [hit, fresh, ext]
+
+// إضافة مستوى سيولة جديد مع رصد Equal Highs/Lows
+f_addLiq(array<Liq> pool, float p, float tol) =>
+    bool isEq = false
+    for q in pool
+        if math.abs(q.price - p) <= tol
+            isEq := true
+            q.eq := true
+    array.unshift(pool, Liq.new(p, isEq, bar_index))
+    if array.size(pool) > 20
+        array.pop(pool)
+    isEq
+
+// رصد Sweep / Stop Hunt: ذيل يخترق المستوى ثم إغلاق عائد فوقه (للشراء) أو تحته (للبيع).
+// أي مستوى يُخترق يُستهلك (يُحذف) سواء كان Sweep ناجحًا أو كسرًا حقيقيًا.
+f_sweepScan(array<Liq> pool, bool bull) =>
+    bool  swept = false
+    bool  eqSw  = false
+    float lvl   = na
+    int   n     = array.size(pool)
+    if n > 0
+        for i = n - 1 to 0
+            Liq  q       = array.get(pool, i)
+            bool pierced = bar_index > q.born and (bull ? low < q.price : high > q.price)
+            if pierced
+                if bull ? close > q.price : close < q.price
+                    swept := true
+                    eqSw  := eqSw or q.eq
+                    lvl   := na(lvl) ? q.price : (bull ? math.min(lvl, q.price) : math.max(lvl, q.price))
+                array.remove(pool, i)
+    [swept, eqSw, lvl]
+
+// اختيار أقرب هدف سيولة يحقق الحد الأدنى من RR
+f_pickTarget(array<float> cands, float entry, float risk, bool bull, float rr) =>
+    float best = na
+    for c in cands
+        if not na(c)
+            float reward = bull ? c - entry : entry - c
+            if reward >= risk * rr
+                if na(best) or (bull ? c < best : c > best)
+                    best := c
+    best
+
+// ════════════════════════════════════════════════════════════════════════════
+// 2) تحليل الهيكل متعدد الفريمات (HTF + Mid) — استدعاءان فقط لـ request.security
+// ════════════════════════════════════════════════════════════════════════════
+// تُنفَّذ هذه الدالة داخل سياق الفريم الأعلى:
+//   trend : 1 صاعد / -1 هابط (حسب آخر BOS أو CHoCH: إغلاق فوق آخر قمة سوينغ أو تحت آخر قاع)
+//   seq   : 1 = HH+HL ، -1 = LH+LL ، 0 = غير محدد
+//   swH / swL : آخر قمة وقاع سوينغ = الـ Dealing Range
+// نُرجع القيم بإزاحة [1] مع lookahead_on → نحصل دائمًا على قيمة آخر شمعة HTF مُغلقة
+// فقط؛ وهذه هي الطريقة الموصى بها رسميًا من TradingView لمنع الـ Repainting والنظر للمستقبل.
+f_mtfStructure(int len) =>
+    float ph = ta.pivothigh(high, len, len)
+    float pl = ta.pivotlow(low, len, len)
+    var float swH  = na
+    var float swL  = na
+    var bool  hBrk = true
+    var bool  lBrk = true
+    var int   trend = 0
+    var float pH1 = na
+    var float pH2 = na
+    var float pL1 = na
+    var float pL2 = na
+    if not na(ph)
+        swH  := ph
+        hBrk := false
+        pH2  := pH1
+        pH1  := ph
+    if not na(pl)
+        swL  := pl
+        lBrk := false
+        pL2  := pL1
+        pL1  := pl
+    if not hBrk and close > swH     // BOS صاعد (أو CHoCH إن كان الاتجاه هابطًا)
+        trend := 1
+        hBrk  := true
+    if not lBrk and close < swL     // BOS هابط (أو CHoCH إن كان الاتجاه صاعدًا)
+        trend := -1
+        lBrk  := true
+    int seq = pH1 > pH2 and pL1 > pL2 ? 1 : pH1 < pH2 and pL1 < pL2 ? -1 : 0
+    [trend[1], seq[1], swH[1], swL[1]]
+
+[htfTrend, htfSeq, htfSwH, htfSwL] = request.security(syminfo.tickerid, htfTF, f_mtfStructure(mtfLen), lookahead = barmerge.lookahead_on)
+[midTrend, midSeq, midSwH, midSwL] = request.security(syminfo.tickerid, midTF, f_mtfStructure(mtfLen), lookahead = barmerge.lookahead_on)
+
+// شمعة CRT المرجعية المُغلقة السابقة (نفس منطق عدم إعادة الرسم) — الاستدعاء الثالث والأخير
+[crtH, crtL, crtO, crtC] = request.security(syminfo.tickerid, crtTF, [high[1], low[1], open[1], close[1]], lookahead = barmerge.lookahead_on)
+
+// حماية: الفريمات المرجعية يجب ألا تكون أصغر من فريم الشارت
+if barstate.isfirst
+    int chartSec = timeframe.in_seconds()
+    if timeframe.in_seconds(htfTF) < chartSec or timeframe.in_seconds(midTF) < chartSec or timeframe.in_seconds(crtTF) < chartSec
+        runtime.error("UCE: HTF / Mid / CRT timeframes must be ≥ the chart timeframe. Use a lower chart timeframe (e.g. 5m / 15m).")
+
+// ════════════════════════════════════════════════════════════════════════════
+// 3) هيكل فريم الدخول: سوينغ (BOS/OB/OTE) + داخلي (Trigger / CHoCH)
+// ════════════════════════════════════════════════════════════════════════════
+atr = ta.atr(14)
+
+sph = ta.pivothigh(high, swingLen, swingLen)
+spl = ta.pivotlow(low, swingLen, swingLen)
+iph = ta.pivothigh(high, intLen, intLen)
+ipl = ta.pivotlow(low, intLen, intLen)
+
+var array<Zone> bullOB  = array.new<Zone>()
+var array<Zone> bearOB  = array.new<Zone>()
+var array<Zone> bullFVG = array.new<Zone>()
+var array<Zone> bearFVG = array.new<Zone>()
+var array<Zone> demand  = array.new<Zone>()
+var array<Zone> supply  = array.new<Zone>()
+var array<Liq>  highsPool = array.new<Liq>()   // Buy-side liquidity (فوق القمم)
+var array<Liq>  lowsPool  = array.new<Liq>()   // Sell-side liquidity (تحت القيعان)
+
+// ── 3.a سوينغ + تجمعات السيولة (Equal Highs / Lows)
+var float sH  = na
+var float sL  = na
+var bool  sHb = true
+var bool  sLb = true
+if not na(sph)
+    sH  := sph
+    sHb := false
+    f_addLiq(highsPool, sph, atr * eqTolAtr)
+if not na(spl)
+    sL  := spl
+    sLb := false
+    f_addLiq(lowsPool, spl, atr * eqTolAtr)
+
+bool bullBOS = not sHb and close > sH
+bool bearBOS = not sLb and close < sL
+
+// ── 3.b Order Blocks: عند BOS نأخذ الشمعة المعاكسة الأعمق (منشأ الحركة) خلال نافذة البحث
+if bullBOS
+    sHb := true
+    float obT = na
+    float obB = na
+    for i = 1 to obLook
+        if close[i] < open[i] and (na(obB) or low[i] < obB)
+            obT := high[i]
+            obB := low[i]
+    if not na(obT)
+        f_push(bullOB, Zone.new(obT, obB, bar_index), maxZones)
+if bearBOS
+    sLb := true
+    float obT = na
+    float obB = na
+    for i = 1 to obLook
+        if close[i] > open[i] and (na(obT) or high[i] > obT)
+            obT := high[i]
+            obB := low[i]
+    if not na(obT)
+        f_push(bearOB, Zone.new(obT, obB, bar_index), maxZones)
+
+// ── 3.c OTE: ساق الحركة بعد آخر BOS، ثم منطقة الارتداد 62%–79%
+var int   legDir = 0
+var float legHi  = na
+var float legLo  = na
+if bullBOS
+    legDir := 1
+    legLo  := na(sL) ? low : math.min(sL, low)
+    legHi  := high
+else if bearBOS
+    legDir := -1
+    legHi  := na(sH) ? high : math.max(sH, high)
+    legLo  := low
+else if legDir == 1
+    legHi := math.max(legHi, high)
+    if close < legLo
+        legDir := 0
+else if legDir == -1
+    legLo := math.min(legLo, low)
+    if close > legHi
+        legDir := 0
+
+float legRng = legHi - legLo
+bool  bullOTEnow = legDir == 1  and legRng > 0 and low  <= legHi - legRng * oteLo and high >= legHi - legRng * oteHi
+bool  bearOTEnow = legDir == -1 and legRng > 0 and high >= legLo + legRng * oteLo and low  <= legLo + legRng * oteHi
+
+// ── 3.d Fair Value Gaps
+if low > high[2] and low - high[2] >= atr * fvgMinAtr
+    f_push(bullFVG, Zone.new(low, high[2], bar_index), maxZones)
+if high < low[2] and low[2] - high >= atr * fvgMinAtr
+    f_push(bearFVG, Zone.new(low[2], high, bar_index), maxZones)
+
+// ── 3.e Supply / Demand: قاعدة صغيرة (Base) تليها شمعة اندفاعية (Displacement)
+float body     = math.abs(close - open)
+bool  bullDisp = close > open and body >= atr * dispMult
+bool  bearDisp = close < open and body >= atr * dispMult
+bool  baseBar  = math.abs(close[1] - open[1]) <= atr * 0.5
+if bullDisp and baseBar
+    f_push(demand, Zone.new(high[1], low[1], bar_index), maxZones)
+if bearDisp and baseBar
+    f_push(supply, Zone.new(high[1], low[1], bar_index), maxZones)
+
+// ── 3.f المُشغّل الداخلي (Entry trigger): كسر آخر قمة/قاع داخلي بالإغلاق = CHoCH على الفريم الصغير
+var float iH  = na
+var float iL  = na
+var bool  iHb = true
+var bool  iLb = true
+if not na(iph)
+    iH  := iph
+    iHb := false
+if not na(ipl)
+    iL  := ipl
+    iLb := false
+bool bullTrig = not iHb and close > iH
+bool bearTrig = not iLb and close < iL
+if bullTrig
+    iHb := true
+if bearTrig
+    iLb := true
+
+// ── 3.g مسح المناطق وتسجيل آخر لمسة لكل نوع (ذاكرة نقاط الاهتمام)
+[obBH, obBF, obBX] = f_scan(bullOB, true)
+[obSH, obSF, obSX] = f_scan(bearOB, false)
+[fvBH, fvBF, fvBX] = f_scan(bullFVG, true)
+[fvSH, fvSF, fvSX] = f_scan(bearFVG, false)
+[sdBH, sdBF, sdBX] = f_scan(demand, true)
+[sdSH, sdSF, sdSX] = f_scan(supply, false)
+
+var int mBullOB  = na
+var int mBullOBF = na
+var int mBullFVG = na
+var int mBullSD  = na
+var int mBullOTE = na
+var int mBearOB  = na
+var int mBearOBF = na
+var int mBearFVG = na
+var int mBearSD  = na
+var int mBearOTE = na
+mBullOB  := obBH ? bar_index : mBullOB
+mBullOBF := obBF ? bar_index : mBullOBF
+mBullFVG := fvBH ? bar_index : mBullFVG
+mBullSD  := sdBH ? bar_index : mBullSD
+mBullOTE := bullOTEnow ? bar_index : mBullOTE
+mBearOB  := obSH ? bar_index : mBearOB
+mBearOBF := obSF ? bar_index : mBearOBF
+mBearFVG := fvSH ? bar_index : mBearFVG
+mBearSD  := sdSH ? bar_index : mBearSD
+mBearOTE := bearOTEnow ? bar_index : mBearOTE
+
+// ════════════════════════════════════════════════════════════════════════════
+// 4) الوقت والجلسات + ICT (Kill Zones / Asia Range / Judas Swing)
+// ════════════════════════════════════════════════════════════════════════════
+f_in(string s) =>
+    not na(time(timeframe.period, s + ":1234567", tz))
+
+bool inAsia = f_in(asiaSess)
+bool inLon  = f_in(lonSess)
+bool inNY   = f_in(nySess)
+bool inKZ   = (useAsia and inAsia) or (useLon and inLon) or (useNY and inNY)
+
+int  dow = dayofweek(time, tz)
+int  hr  = hour(time, tz)
+bool weekendBlock = exWeekend and (dow == dayofweek.saturday or dow == dayofweek.sunday or
+     (dow == dayofweek.monday and hr < monStart) or (dow == dayofweek.friday and hr >= friEnd))
+bool blackout = useBlack and f_in(blackSess)
+bool timeOK   = (sessFilter == "Off" or inKZ) and not weekendBlock and not blackout
+
+// نطاق آسيا (سيولة الجلسة) — يُبنى أثناء آسيا ويُستخدم بعدها
+var float asiaH  = na
+var float asiaL  = na
+var bool  asiaHs = false
+var bool  asiaLs = false
+if inAsia and not inAsia[1]
+    asiaH  := high
+    asiaL  := low
+    asiaHs := false
+    asiaLs := false
+else if inAsia
+    asiaH := math.max(asiaH, high)
+    asiaL := math.min(asiaL, low)
+
+// Judas Swing: حركة خادعة في افتتاح لندن/نيويورك تسحب طرف نطاق آسيا ثم تُغلق عائدة داخله
+bool asiaSwBull = false
+bool asiaSwBear = false
+if not inAsia and not na(asiaL) and not asiaLs and low < asiaL
+    asiaLs     := true
+    asiaSwBull := close > asiaL
+if not inAsia and not na(asiaH) and not asiaHs and high > asiaH
+    asiaHs     := true
+    asiaSwBear := close < asiaH
+bool lonNY = (useLon and inLon) or (useNY and inNY)
+var int mJudasBull = na
+var int mJudasBear = na
+mJudasBull := asiaSwBull and lonNY ? bar_index : mJudasBull
+mJudasBear := asiaSwBear and lonNY ? bar_index : mJudasBear
+
+// ════════════════════════════════════════════════════════════════════════════
+// 5) CRT — تجميع (الشمعة المرجعية) → تلاعب (كسر كاذب لطرفها) → توزيع (عودة داخل المدى)
+// ════════════════════════════════════════════════════════════════════════════
+bool crtNew = ta.change(time(crtTF)) != 0
+var bool crtLs = false
+var bool crtHs = false
+if crtNew
+    crtLs := false
+    crtHs := false
+if not na(crtL) and low < crtL
+    crtLs := true
+if not na(crtH) and high > crtH
+    crtHs := true
+// شرط عدم كسر الطرفين معًا (Outside bar = لا نموذج CRT واضح)
+bool crtBull = crtLs and not crtHs and close > crtL and close < crtH
+bool crtBear = crtHs and not crtLs and close < crtH and close > crtL
+bool crtSwBull = not na(crtL) and low < crtL and close > crtL
+bool crtSwBear = not na(crtH) and high > crtH and close < crtH
+
+// ════════════════════════════════════════════════════════════════════════════
+// 6) محرك السيولة — Sweeps من (سوينغ / EQH-EQL / آسيا / CRT) + المستويات النفسية
+// ════════════════════════════════════════════════════════════════════════════
+float roundStep = roundStepIn > 0 ? roundStepIn : math.pow(10, math.floor(math.log10(math.max(close, 1e-10))) - 2)
+f_isRound(float lvl) =>
+    useRound and not na(lvl) and math.abs(lvl - math.round(lvl / roundStep) * roundStep) <= atr * 0.25
+
+[lqBull, lqBullEq, lqBullLvl] = f_sweepScan(lowsPool, true)
+[lqBear, lqBearEq, lqBearLvl] = f_sweepScan(highsPool, false)
+
+bool  bullSwNow = lqBull or asiaSwBull or crtSwBull
+bool  bearSwNow = lqBear or asiaSwBear or crtSwBear
+float bullLvl   = lqBull ? lqBullLvl : asiaSwBull ? asiaL : crtL
+float bearLvl   = lqBear ? lqBearLvl : asiaSwBear ? asiaH : crtH
+
+// ذاكرة آخر Sweep: رقم الشمعة، أقصى امتداد (لوضع الستوب)، المستوى المسحوب، وهل كان تجمع سيولة
+var int   swBullBar  = na
+var float swBullExt  = na
+var float swBullLvl  = na
+var bool  swBullPool = false
+var int   swBearBar  = na
+var float swBearExt  = na
+var float swBearLvl  = na
+var bool  swBearPool = false
+
+if bullSwNow
+    bool act = inWin(swBullBar, sweepWin)
+    swBullExt  := act ? math.min(swBullExt, low) : low
+    swBullPool := (act and swBullPool) or lqBullEq or f_isRound(bullLvl)
+    swBullLvl  := bullLvl
+    swBullBar  := bar_index
+else if inWin(swBullBar, sweepWin)
+    swBullExt := math.min(swBullExt, low)
+    if close < swBullLvl              // Sweep فاشل: قبول السعر تحت المستوى → إلغاء
+        swBullBar := na
+
+if bearSwNow
+    bool act = inWin(swBearBar, sweepWin)
+    swBearExt  := act ? math.max(swBearExt, high) : high
+    swBearPool := (act and swBearPool) or lqBearEq or f_isRound(bearLvl)
+    swBearLvl  := bearLvl
+    swBearBar  := bar_index
+else if inWin(swBearBar, sweepWin)
+    swBearExt := math.max(swBearExt, high)
+    if close > swBearLvl
+        swBearBar := na
+
+// ════════════════════════════════════════════════════════════════════════════
+// 7) Premium / Discount — نطاق التعامل (Dealing Range) من هيكل الفريم الأعلى
+// ════════════════════════════════════════════════════════════════════════════
+float drH = math.max(htfSwH, htfSwL)
+float drL = math.min(htfSwH, htfSwL)
+float eqm = (drH + drL) / 2           // Equilibrium
+bool  inDiscount = not na(eqm) and close < eqm
+bool  inPremium  = not na(eqm) and close > eqm
+
+// ════════════════════════════════════════════════════════════════════════════
+// 8) محرك الدمج (Confluence Engine) — نقاط موزونة + بوابات إلزامية
+// ════════════════════════════════════════════════════════════════════════════
+bool bSweep = inWin(swBullBar, sweepWin)
+bool sSweep = inWin(swBearBar, sweepWin)
+bool bOB  = inWin(mBullOB, poiWin)
+bool sOB  = inWin(mBearOB, poiWin)
+bool bOBF = inWin(mBullOBF, poiWin)
+bool sOBF = inWin(mBearOBF, poiWin)
+bool bFVG = inWin(mBullFVG, poiWin)
+bool sFVG = inWin(mBearFVG, poiWin)
+bool bSD  = inWin(mBullSD, poiWin)
+bool sSD  = inWin(mBearSD, poiWin)
+bool bOTE = inWin(mBullOTE, poiWin)
+bool sOTE = inWin(mBearOTE, poiWin)
+bool bJud = inWin(mJudasBull, sweepWin)
+bool sJud = inWin(mJudasBear, sweepWin)
+
+float bullScore = 0.0
+bullScore += htfTrend == 1 ? wHTF : 0.0
+bullScore += htfSeq == 1 ? wSeq : 0.0
+bullScore += midTrend == 1 ? wMid : 0.0
+bullScore += bSweep ? wSweep : 0.0
+bullScore += bSweep and swBullPool ? wPool : 0.0
+bullScore += bOB ? wOB + (bOBF ? wFresh : 0.0) : 0.0
+bullScore += bFVG ? wFVG : 0.0
+bullScore += bSD ? wSD : 0.0
+bullScore += inDiscount ? wPD : 0.0
+bullScore += bOTE ? wOTE : 0.0
+bullScore += inKZ ? wKZ : 0.0
+bullScore += bJud ? wJudas : 0.0
+bullScore += crtBull ? wCRT : 0.0
+bullScore += bullDisp ? wDisp : 0.0
+
+float bearScore = 0.0
+bearScore += htfTrend == -1 ? wHTF : 0.0
+bearScore += htfSeq == -1 ? wSeq : 0.0
+bearScore += midTrend == -1 ? wMid : 0.0
+bearScore += sSweep ? wSweep : 0.0
+bearScore += sSweep and swBearPool ? wPool : 0.0
+bearScore += sOB ? wOB + (sOBF ? wFresh : 0.0) : 0.0
+bearScore += sFVG ? wFVG : 0.0
+bearScore += sSD ? wSD : 0.0
+bearScore += inPremium ? wPD : 0.0
+bearScore += sOTE ? wOTE : 0.0
+bearScore += inKZ ? wKZ : 0.0
+bearScore += sJud ? wJudas : 0.0
+bearScore += crtBear ? wCRT : 0.0
+bearScore += bearDisp ? wDisp : 0.0
+
+// بوابة التوافق بين الفريمات
+bool mtfBullOK = mtfMode == "Off" or (mtfMode == "Strict" ? htfTrend == 1 and midTrend == 1 : htfTrend == 1 and midTrend != -1)
+bool mtfBearOK = mtfMode == "Off" or (mtfMode == "Strict" ? htfTrend == -1 and midTrend == -1 : htfTrend == -1 and midTrend != 1)
+
+// سياق منطقة الاهتمام (لا دخول عشوائي داخل الرينج)
+bool poiBull = bOB or bFVG or bSD or bOTE or crtBull
+bool poiBear = sOB or sFVG or sSD or sOTE or crtBear
+
+// ════════════════════════════════════════════════════════════════════════════
+// 9) إدارة الصفقة (حالة واحدة فقط — لا إشارات جديدة قبل إغلاق/إبطال الصفقة الحالية)
+// ════════════════════════════════════════════════════════════════════════════
+var int   tradeDir = 0
+var int   tBar     = na
+var float tEntry   = na
+var float tSL      = na
+var float tTP      = na
+var line  slLine   = na
+var line  tpLine   = na
+var label slTag    = na
+var label tpTag    = na
+
+bool tpHit = false
+bool slHit = false
+bool tradeClosed = false
+
+if tradeDir != 0 and bar_index > tBar
+    bool hSL = tradeDir == 1 ? low <= tSL : high >= tSL
+    bool hTP = tradeDir == 1 ? high >= tTP : low <= tTP
+    bool tOut = maxBars > 0 and bar_index - tBar >= maxBars
+    if hSL or hTP or tOut
+        slHit := hSL                     // إذا لُمس الاثنان في نفس الشمعة نفترض الستوب (افتراض متحفظ)
+        tpHit := hTP and not hSL
+        tradeClosed := true
+        tradeDir := 0
+        if keepAfter
+            line.set_x2(slLine, bar_index)
+            line.set_x2(tpLine, bar_index)
+        else
+            line.delete(slLine)
+            line.delete(tpLine)
+        label.delete(slTag)
+        label.delete(tpTag)
+    else
+        line.set_x2(slLine, bar_index + 1)
+        line.set_x2(tpLine, bar_index + 1)
+        label.set_x(slTag, bar_index + 1)
+        label.set_x(tpTag, bar_index + 1)
+
+// رسم خطي SL/TP (Pine لا يسمح بتعديل متغيرات عامة داخل دالة، لذا نُرجع المعرّفات)
+f_draw(float sl, float tp) =>
+    line  l1 = na
+    line  l2 = na
+    label t1 = na
+    label t2 = na
+    if showLines
+        l1 := line.new(bar_index, sl, bar_index + 1, sl, color = colSL, width = 2)
+        l2 := line.new(bar_index, tp, bar_index + 1, tp, color = colTP, width = 2)
+        if showPx
+            t1 := label.new(bar_index + 1, sl, "SL " + str.tostring(sl, format.mintick), style = label.style_label_left,
+                 color = color.new(colSL, 15), textcolor = color.white, size = size.small)
+            t2 := label.new(bar_index + 1, tp, "TP " + str.tostring(tp, format.mintick), style = label.style_label_left,
+                 color = color.new(colTP, 15), textcolor = color.white, size = size.small)
+    [l1, l2, t1, t2]
+
+bool canSignal = tradeDir == 0 and not tradeClosed and timeOK and (not confirmClose or barstate.isconfirmed)
+bool buySignal  = false
+bool sellSignal = false
+
+// ── BUY: Trigger + Sweep + MTF + POI + Score ≥ Threshold + RR صالح
+if canSignal and bullTrig and bSweep and mtfBullOK and (not requirePOI or poiBull) and bullScore >= threshold
+    float entry = close
+    float sl    = swBullExt - atr * slBufAtr      // تحت نقطة السيولة المسحوبة
+    float risk  = entry - sl
+    if risk > 0 and risk <= atr * maxRiskAtr
+        array<float> cands = array.new_float()
+        for q in highsPool                        // قمم/EQH غير مسحوبة = سيولة شرائية
+            array.push(cands, q.price)
+        array.push(cands, crtH)
+        array.push(cands, asiaH)
+        array.push(cands, midSwH)
+        array.push(cands, htfSwH)
+        if useRound
+            float rUp = math.ceil(entry / roundStep) * roundStep
+            array.push(cands, rUp > entry ? rUp : rUp + roundStep)
+        float tp = f_pickTarget(cands, entry, risk, true, minRR)
+        if na(tp) and useFallback
+            tp := entry + risk * minRR
+        if not na(tp)
+            buySignal := true
+            tradeDir  := 1
+            tBar      := bar_index
+            tEntry    := entry
+            tSL       := sl
+            tTP       := tp
+            swBullBar := na                        // استهلاك الـ Sweep حتى لا تتكرر الإشارة على نفس الحدث
+            [l1, l2, t1, t2] = f_draw(sl, tp)
+            slLine := l1
+            tpLine := l2
+            slTag  := t1
+            tpTag  := t2
+
+// ── SELL
+if canSignal and not buySignal and bearTrig and sSweep and mtfBearOK and (not requirePOI or poiBear) and bearScore >= threshold
+    float entry = close
+    float sl    = swBearExt + atr * slBufAtr      // فوق نقطة السيولة المسحوبة
+    float risk  = sl - entry
+    if risk > 0 and risk <= atr * maxRiskAtr
+        array<float> cands = array.new_float()
+        for q in lowsPool                         // قيعان/EQL غير مسحوبة = سيولة بيعية
+            array.push(cands, q.price)
+        array.push(cands, crtL)
+        array.push(cands, asiaL)
+        array.push(cands, midSwL)
+        array.push(cands, htfSwL)
+        if useRound
+            float rDn = math.floor(entry / roundStep) * roundStep
+            array.push(cands, rDn < entry ? rDn : rDn - roundStep)
+        float tp = f_pickTarget(cands, entry, risk, false, minRR)
+        if na(tp) and useFallback
+            tp := entry - risk * minRR
+        if not na(tp)
+            sellSignal := true
+            tradeDir   := -1
+            tBar       := bar_index
+            tEntry     := entry
+            tSL        := sl
+            tTP        := tp
+            swBearBar  := na
+            [l1, l2, t1, t2] = f_draw(sl, tp)
+            slLine := l1
+            tpLine := l2
+            slTag  := t1
+            tpTag  := t2
+
+// ════════════════════════════════════════════════════════════════════════════
+// 10) المخرجات المرئية — BUY / SELL فقط (+ خطوط SL/TP أعلاه)
+// ════════════════════════════════════════════════════════════════════════════
+plotshape(buySignal,  "BUY",  shape.labelup,   location.belowbar, colBuy,  text = "BUY",  textcolor = color.white, size = size.small)
+plotshape(sellSignal, "SELL", shape.labeldown, location.abovebar, colSell, text = "SELL", textcolor = color.white, size = size.small)
+
+// قيم مخفية عن الشارت (تُستخدم في رسائل التنبيه + نافذة البيانات فقط)
+plot(buySignal or sellSignal ? tEntry : na, "Signal Entry", display = display.none)
+plot(buySignal or sellSignal ? tSL : na,    "Signal SL",    display = display.none)
+plot(buySignal or sellSignal ? tTP : na,    "Signal TP",    display = display.none)
+plot(bullScore, "Bull Score", color = colBuy,  display = display.data_window)
+plot(bearScore, "Bear Score", color = colSell, display = display.data_window)
+
+// ════════════════════════════════════════════════════════════════════════════
+// 11) التنبيهات (Alerts) — للموبايل / تيليجرام عبر Webhook
+// ════════════════════════════════════════════════════════════════════════════
+alertcondition(buySignal,  "UCE BUY",  'UCE BUY {{ticker}} ({{interval}}) | Entry {{plot("Signal Entry")}} | SL {{plot("Signal SL")}} | TP {{plot("Signal TP")}}')
+alertcondition(sellSignal, "UCE SELL", 'UCE SELL {{ticker}} ({{interval}}) | Entry {{plot("Signal Entry")}} | SL {{plot("Signal SL")}} | TP {{plot("Signal TP")}}')
+alertcondition(buySignal or sellSignal, "UCE Any Signal", 'UCE signal on {{ticker}} ({{interval}}) | Entry {{plot("Signal Entry")}} | SL {{plot("Signal SL")}} | TP {{plot("Signal TP")}}')
+alertcondition(tpHit, "UCE Take Profit hit", 'UCE {{ticker}}: Take Profit reached')
+alertcondition(slHit, "UCE Stop Loss hit",   'UCE {{ticker}}: Stop Loss hit')
+
+// رسالة ديناميكية كاملة (اختر "Any alert() function call" عند إنشاء التنبيه)
+if buySignal or sellSignal
+    string side = buySignal ? "BUY" : "SELL"
+    float  sc   = buySignal ? bullScore : bearScore
+    alert("UCE " + side + " " + syminfo.ticker + " [" + timeframe.period + "]" +
+         " | Entry " + str.tostring(tEntry, format.mintick) +
+         " | SL " + str.tostring(tSL, format.mintick) +
+         " | TP " + str.tostring(tTP, format.mintick) +
+         " | RR 1:" + str.tostring(math.abs(tTP - tEntry) / math.abs(tEntry - tSL), "#.##") +
+         " | Score " + str.tostring(sc, "#.#"), alert.freq_once_per_bar_close)
+if tpHit or slHit
+    alert("UCE " + syminfo.ticker + " trade closed: " + (tpHit ? "Take Profit" : "Stop Loss"), alert.freq_once_per_bar_close)
