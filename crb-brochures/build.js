@@ -1,4 +1,4 @@
-// يولّد مطويات القطاعات: node build.js [food shelter ...] [--lang ar|en|all] [--out dir]
+// يولّد مطويات القطاعات: node build.js [food shelter ...] [--lang ar|en|tr|all] [--out dir]
 // لكل قطاع: HTML قابل للتعديل + PDF بمقاس A4 + PDF للمطبعة (نزف 3مم وعلامات) + معاينة PNG لكل وجه
 const fs = require('fs');
 const path = require('path');
@@ -10,7 +10,7 @@ const args = process.argv.slice(2);
 const oi = args.indexOf('--out');
 const out = oi >= 0 ? path.resolve(args.splice(oi, 2)[1]) : path.join(__dirname, 'output');
 const li = args.indexOf('--lang');
-const langs = li >= 0 ? (v => (v === 'all' ? ['ar', 'en'] : [v]))(args.splice(li, 2)[1]) : ['ar', 'en'];
+const langs = li >= 0 ? (v => (v === 'all' ? ['ar', 'en', 'tr'] : [v]))(args.splice(li, 2)[1]) : ['ar', 'en', 'tr'];
 const ids = args.length ? args : ALL;
 const deepMerge = (a, b) => {
   if (Array.isArray(a) && Array.isArray(b)) return a.map((x, i) => (i < b.length ? deepMerge(x, b[i]) : x));
@@ -28,11 +28,11 @@ const deepMerge = (a, b) => {
   const hi = await browser.newPage({ deviceScaleFactor: 300 / 96 });
   const pdf = { printBackground: true, margin: { top: 0, right: 0, bottom: 0, left: 0 } };
   for (const lang of langs) for (const id of ids) {
-    // النسخة الإنجليزية = بيانات القطاع العربية (الأرقام والصور) + ترجمة النصوص من sectors/en/
-    const d = lang === 'en' ? deepMerge(require(`./sectors/${id}`), require(`./sectors/en/${id}`)) : require(`./sectors/${id}`);
-    const html = path.join(__dirname, lang === 'en' ? `${id}-en.html` : `${id}.html`);
+    // النسخ المترجمة = بيانات القطاع العربية (الأرقام والصور) + ترجمة النصوص من sectors/<lang>/
+    const d = lang === 'ar' ? require(`./sectors/${id}`) : deepMerge(require(`./sectors/${id}`), require(`./sectors/${lang}/${id}`));
+    const html = path.join(__dirname, lang === 'ar' ? `${id}.html` : `${id}-${lang}.html`);
     fs.writeFileSync(html, render(d, lang));
-    const dir = lang === 'en' ? path.join(out, 'en', id) : path.join(out, id);
+    const dir = lang === 'ar' ? path.join(out, id) : path.join(out, lang, id);
     fs.mkdirSync(dir, { recursive: true });
     const url = m => `file://${html}?mode=${m}`;
 

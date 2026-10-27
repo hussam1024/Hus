@@ -315,3 +315,7 @@ body.ltr{font-family:"Poppins","Tajawal",sans-serif}
 .cover .rule{flex:none;min-height:.6mm}
 .ltr .cover .title-block{top:142mm}
 .ltr .cover .en{margin-top:1.4mm}
+
+/* ====================== النسخة التركية ======================
+   لا يتوفر قاموس تقسيم كلمات تركي في المتصفح؛ المحاذاة لليسار تمنع الفراغات الواسعة بين الكلمات */
+:lang(tr) p{text-align:left;hyphens:manual}

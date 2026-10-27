@@ -1,7 +1,6 @@
 // يولّد صفحة HTML لمطوية قطاع من ملف بياناته في sectors/ – بالعربية (RTL) أو الإنجليزية (LTR)
 const ICONS = require('./icons');
 
-const fmt = n => (typeof n === 'number' ? n.toLocaleString('en-US') : n);
 const ic = (id, cls = '') => `<svg${cls ? ` class="${cls}"` : ''}><use href="#${id}"/></svg>`;
 const style = o => {
   const s = Object.entries(o || {}).filter(([, v]) => v != null).map(([k, v]) => `${k}:${v}`).join(';');
@@ -44,10 +43,27 @@ const T = {
     sdgHead: (n, l) => `Toward SDG ${n}: ${l}`,
     title: d => `CRB ${d.name} Sector Brochure`,
   },
+  tr: {
+    dir: 'ltr', locale: 'tr-TR', pct: n => `%${n}`, harvest: '10 Yılın Hasadı', sector: 'SEKTÖR',
+    org: 'Coalition of Relief and Building', org2: '<span dir="rtl">منتدى الإغاثة والبناء</span> (CRB)',
+    slogan: '<em>İnsani Hizmet</em> … Sürdürülebilir Kalkınma',
+    years: '<b>10</b> Yıllık Hizmet <span class="d">2016 - 2025</span>',
+    coord: 'Koordinasyon ve Ortaklıklar', partners: 'CRB’nin Başlıca Ortakları',
+    address: '<b>Genel Merkez:</b> 26 Eylül Caddesi, Al-Rawhajan Kulesi, Marib Şehir Merkezi, Marib İli, Yemen Cumhuriyeti.',
+    story: 'Başarı Hikâyesi', byProgram: 'Programlara Göre Projeler',
+    statP: 'Uygulanan Proje', statB: 'Faydalanıcı',
+    // Türkçede sayıdan sonra isim tekil kalır: "157 Proje", "1.884.044 Faydalanıcı"
+    proj: () => 'Proje', benef: () => 'Faydalanıcı', projL: () => 'proje', benefL: () => 'faydalanıcı',
+    sdg: { 1: 'Yoksulluğa Son', 2: 'Açlığa Son', 3: 'Sağlıklı ve Kaliteli Yaşam', 4: 'Nitelikli Eğitim', 6: 'Temiz Su ve Sanitasyon' },
+    sdgHead: (n, l) => `Sürdürülebilir Kalkınma Amacı ${n}:<br>${l}`,
+    title: d => `CRB ${d.name} Sektörü Broşürü`,
+  },
 };
 
 module.exports = (d, lang = 'ar') => {
-  const t = T[lang], en = lang === 'en';
+  const t = T[lang], en = t.dir === 'ltr'; // en = أي لغة من اليسار لليمين (الإنجليزية أو التركية)
+  const fmt = n => (typeof n === 'number' ? n.toLocaleString(t.locale || 'en-US') : n);
+  const pct = n => (t.pct ? t.pct(n) : `${n}%`);
   // الجهة "البعيدة" عن الطية تنعكس مع اتجاه اللغة
   const S = en ? 'right' : 'left', E = en ? 'left' : 'right';
 
@@ -207,7 +223,7 @@ module.exports = (d, lang = 'ar') => {
       <h4>${t.byProgram}</h4>
       <div class="chart">
         <div class="donut">${dn.svg}<div class="c"><b>${fmt(dn.total)}</b><span>${t.proj(dn.total)}</span></div></div>
-        <ul class="legend">${d.programs.map((p, i) => `<li><i style="background:${p.color}"></i>${p.name}<em>${dn.pcts[i]}%</em><small>${fmt(p.projects)} ${t.projL(p.projects)} · ${fmt(p.benef)} ${p.benefLabel || t.benefL(p.benef)}</small></li>`).join('')}</ul>
+        <ul class="legend">${d.programs.map((p, i) => `<li><i style="background:${p.color}"></i>${p.name}<em>${pct(dn.pcts[i])}</em><small>${fmt(p.projects)} ${t.projL(p.projects)} · ${fmt(p.benef)} ${p.benefLabel || t.benefL(p.benef)}</small></li>`).join('')}</ul>
       </div>
     </div>
     ${photo(o.photo, 'flex')}
