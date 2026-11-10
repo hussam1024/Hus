@@ -1,0 +1,21 @@
+{
+  "name": "crb-system",
+  "version": "1.0.0",
+  "description": "نظام الإدارة المتكامل — منتدى الإغاثة والبناء (Coalition of Relief and Building)",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js",
+    "demo": "node server/demo.js",
+    "test": "node test/smoke.js"
+  },
+  "license": "UNLICENSED",
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "express": "^4.22.3",
+    "multer": "^2.5.0"
+  },
+  "private": true,
+  "engines": {
+    "node": ">=22.13"
+  }
+}
