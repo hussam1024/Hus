@@ -1,0 +1,828 @@
+//@version=6
+// ════════════════════════════════════════════════════════════════════════════
+//  APEX Scalper Pro  ·  Adaptive Confluence Engine
+// ════════════════════════════════════════════════════════════════════════════
+//  مؤشر سكالبينج بمحرّكين يعملان معًا:
+//    المحرك A  ·  ارتداد مع الاتجاه (Trend Pullback): اتجاه واضح → تراجع إلى منطقة
+//                 القيمة (EMA 21/50) → شمعة تأكيد تستأنف الاتجاه.
+//    المحرك B  ·  انعكاس بعد سحب السيولة (Liquidity Sweep): كسر كاذب لقاع/قمة سوينغ
+//                 ثم إغلاق عائد فوقه/تحته مع تشبّع ودايفرجنس.
+//  كل إشارة تمر عبر بوابات إلزامية ثم تُقيَّم من 100 نقطة على 7 محاور:
+//    الفريمات الأعلى · الهيكل · حالة السوق · الزخم · الحجم · الموقع · شمعة الدخول.
+//  بعد الإشارة يدير المؤشر الصفقة: وقف + 3 أهداف + نقل الوقف للتعادل، ويحسب
+//  نتائج كل الإشارات السابقة (نسبة الفوز، صافي R، معامل الربح) في لوحة على الشارت.
+//
+//  لا إعادة رسم: الإشارات عند إغلاق الشمعة فقط، وبيانات الفريمات الأعلى من آخر
+//  شمعة مُغلقة.
+//
+//  ⚠️ أداة مساعدة على القرار وليست نصيحة مالية. لا يوجد مؤشر يضمن الربح، والأداء
+//  السابق لا يضمن النتائج المستقبلية. الإحصاءات في اللوحة افتراضية ولا تشمل
+//  السبريد والعمولة والانزلاق. اختبره على حساب تجريبي أولًا.
+// ════════════════════════════════════════════════════════════════════════════
+indicator("APEX Scalper Pro · Adaptive Confluence Engine", shorttitle = "APEX Scalper", overlay = true,
+     max_lines_count = 500, max_labels_count = 500, max_boxes_count = 500)
+
+// ════════════════════════════════════════════════════════════════════════════
+// 0) الإعدادات
+// ════════════════════════════════════════════════════════════════════════════
+string G1 = "① Core · الأساسيات"
+i_lang   = input.string("العربية", "Language · اللغة", options = ["العربية", "English"], group = G1)
+i_mode   = input.string("Balanced", "Signal mode · نمط الإشارات", options = ["Conservative", "Balanced", "Aggressive", "Custom"], group = G1,
+     tooltip = "الحد الأدنى للنقاط حتى تظهر الإشارة:\nConservative = 78 (إشارات أقل وأنقى)\nBalanced = 68\nAggressive = 58 (إشارات أكثر وأضعف)\nCustom = القيمة في الخانة التالية")
+i_custom = input.int(68, "Custom minimum score (0-100)", minval = 30, maxval = 98, group = G1)
+i_engA   = input.bool(true, "Engine A · Trend pullback (ارتداد مع الاتجاه)", group = G1)
+i_engB   = input.bool(true, "Engine B · Liquidity-sweep reversal (انعكاس بعد سحب السيولة)", group = G1)
+i_side   = input.string("Both", "Direction · الاتجاه", options = ["Both", "Long only", "Short only"], group = G1)
+i_cool   = input.int(3, "Cooldown between signals (bars)", minval = 0, group = G1)
+
+string G2 = "② Higher-timeframe bias · الفريمات الأعلى"
+i_htfAuto = input.bool(true, "Auto-select higher timeframes", group = G2,
+     tooltip = "يختار الفريمين الأعلى تلقائيًا حسب فريم الشارت:\n1m-3m → 15m و 1H\n5m-15m → 1H و 4H\n30m-1H → 4H و D\n4H → D و W")
+i_htf1    = input.timeframe("60", "HTF 1 (manual)", group = G2)
+i_htf2    = input.timeframe("240", "HTF 2 (manual)", group = G2)
+i_htfGate = input.string("Balanced", "HTF gate · بوابة الفريم الأعلى", options = ["Strict", "Balanced", "Off"], group = G2,
+     tooltip = "Strict: HTF1 مع اتجاه الصفقة و HTF2 ليس ضدها.\nBalanced: HTF1 ليس ضد الصفقة.\nOff: بلا بوابة (التوافق يُحسب في النقاط فقط).")
+i_hFast   = input.int(20, "HTF EMA fast", minval = 2, inline = "h", group = G2)
+i_hSlow   = input.int(50, "slow", minval = 5, inline = "h", group = G2)
+
+string G3 = "③ Engine A · Trend pullback"
+i_emaFast = input.int(9, "EMA trigger", minval = 2, inline = "e1", group = G3)
+i_emaMid  = input.int(21, "EMA value", minval = 3, inline = "e1", group = G3)
+i_emaSlow = input.int(50, "EMA trend", minval = 5, inline = "e2", group = G3)
+i_emaBase = input.int(200, "EMA base", minval = 20, inline = "e2", group = G3)
+i_pbWin   = input.int(6, "Pullback validity (bars)", minval = 1, maxval = 30, group = G3,
+     tooltip = "عدد الشموع المسموح بها بين لمس منطقة القيمة (EMA value) وشمعة التأكيد.")
+i_pbTol   = input.float(0.10, "Pullback touch tolerance (× ATR)", minval = 0.0, step = 0.05, group = G3)
+i_extMax  = input.float(1.6, "Max distance from EMA value (× ATR)", minval = 0.3, step = 0.1, group = G3,
+     tooltip = "يمنع مطاردة السعر: لا إشارة إذا كان الإغلاق أبعد من هذه المسافة عن EMA value.")
+i_stMult  = input.float(3.0, "Supertrend factor", minval = 0.5, step = 0.1, inline = "st", group = G3)
+i_stLen   = input.int(10, "length", minval = 2, inline = "st", group = G3)
+
+string G4 = "④ Engine B · Liquidity sweep"
+i_swing = input.int(5, "Swing pivot length", minval = 2, maxval = 20, group = G4)
+i_swWin = input.int(4, "Bars allowed to confirm after the sweep", minval = 0, maxval = 20, group = G4)
+i_eqTol = input.float(0.10, "Equal highs/lows tolerance (× ATR)", minval = 0.01, step = 0.01, group = G4)
+
+string G5 = "⑤ Filters · الفلاتر"
+i_useRegime = input.bool(true, "Trend-quality filter (Engine A)", inline = "rg", group = G5,
+     tooltip = "المحرك A لا يعمل إلا إذا كان ADX فوق الحد أو كانت الحركة فعّالة (Efficiency Ratio ≥ 0.25). يستبعد التذبذب العرضي.")
+i_adxMin    = input.int(20, "ADX ≥", minval = 5, maxval = 60, inline = "rg", group = G5)
+i_useVolat  = input.bool(true, "Skip dead markets: ATR ≥ average ×", inline = "vl", group = G5)
+i_minVol    = input.float(0.70, "", minval = 0.1, step = 0.05, inline = "vl", group = G5)
+i_spike     = input.float(3.0, "Skip spike candles: range > (× ATR)", minval = 1.0, step = 0.25, group = G5,
+     tooltip = "يتجاهل شموع الأخبار/الانفجار السعري حتى لا تدخل عند نهاية الحركة.")
+i_useSess   = input.bool(false, "Trade only inside sessions", group = G5)
+i_tz        = input.string("America/New_York", "Session time zone", group = G5)
+i_sess1     = input.session("0200-0500", "Session 1 (London)", group = G5)
+i_sess2     = input.session("0700-1100", "Session 2 (New York)", group = G5)
+
+string G6 = "⑥ Risk & trade management · إدارة الصفقة"
+i_slMode  = input.string("Structure", "Stop-loss mode", options = ["Structure", "ATR"], group = G6,
+     tooltip = "Structure: خلف قاع/قمة التراجع أو خلف ذيل سحب السيولة + هامش.\nATR: مسافة ثابتة = ATR × المضاعف.")
+i_slLook  = input.int(5, "Structure lookback (bars)", minval = 2, maxval = 30, group = G6)
+i_slBuf   = input.float(0.15, "Stop buffer (× ATR)", minval = 0.0, step = 0.05, group = G6)
+i_atrSL   = input.float(1.5, "ATR stop multiplier (ATR mode)", minval = 0.3, step = 0.1, group = G6)
+i_minRisk = input.float(0.6, "Risk limits (× ATR): min", minval = 0.1, step = 0.1, inline = "rk", group = G6)
+i_maxRisk = input.float(2.5, "max", minval = 0.5, step = 0.1, inline = "rk", group = G6)
+i_rr1     = input.float(1.0, "TP1 (R)", minval = 0.2, step = 0.1, inline = "tp", group = G6)
+i_rr2     = input.float(2.0, "TP2 (R)", minval = 0.3, step = 0.1, inline = "tp", group = G6)
+i_rr3     = input.float(3.0, "TP3 (R)", minval = 0.4, step = 0.1, inline = "tp", group = G6)
+i_p1      = input.int(50, "Close at TP1 %", minval = 0, maxval = 100, inline = "pp", group = G6)
+i_p2      = input.int(30, "at TP2 %", minval = 0, maxval = 100, inline = "pp", group = G6,
+     tooltip = "الباقي يُغلق عند TP3. هذه النسب تُستخدم في حساب صافي R في اللوحة.")
+i_be      = input.bool(true, "Move stop to breakeven after TP1", group = G6)
+i_trail   = input.bool(true, "Move stop to TP1 after TP2", group = G6)
+i_reentry = input.bool(true, "Allow a new signal once TP1 is secured (closes the runner)", group = G6)
+i_rev     = input.bool(true, "Opposite signal closes and reverses the trade", group = G6)
+i_maxBars = input.int(0, "Time stop: close after N bars (0 = off)", minval = 0, group = G6)
+
+string G7 = "⑦ Visuals · المظهر"
+i_showLv  = input.bool(true, "Show entry / SL / TP levels", group = G7)
+i_keep    = input.bool(true, "Keep levels of closed trades", group = G7)
+i_ext     = input.int(10, "Level label offset (bars)", minval = 1, maxval = 60, group = G7)
+i_cloud   = input.bool(true, "Trend cloud (EMA value ↔ EMA trend)", group = G7)
+i_showBas = input.bool(false, "EMA base line", inline = "ln", group = G7)
+i_showVw  = input.bool(false, "VWAP", inline = "ln", group = G7)
+i_barCol  = input.bool(true, "Color bars by trend state", group = G7)
+i_dash    = input.bool(true, "Dashboard", inline = "ds", group = G7)
+i_pos     = input.string("Top right", "", options = ["Top right", "Top left", "Bottom right", "Bottom left", "Middle right"], inline = "ds", group = G7)
+i_dsz     = input.string("Small", "", options = ["Tiny", "Small", "Normal"], inline = "ds", group = G7)
+i_cBull   = input.color(#00B894, "Bull", inline = "c1", group = G7)
+i_cBear   = input.color(#F0466B, "Bear", inline = "c1", group = G7)
+i_cEn     = input.color(#8A93A6, "Entry", inline = "c2", group = G7)
+i_cSL     = input.color(#F0466B, "SL", inline = "c2", group = G7)
+i_cTP     = input.color(#2D8CFF, "TP", inline = "c2", group = G7)
+
+string G8 = "⑧ Alerts · التنبيهات"
+i_json = input.bool(false, "alert() message as JSON (webhook / bots)", group = G8)
+
+// ════════════════════════════════════════════════════════════════════════════
+// 1) دوال مساعدة وأنواع البيانات
+// ════════════════════════════════════════════════════════════════════════════
+L(string ar, string en) => i_lang == "English" ? en : ar
+f_in(int b, int w) => not na(b) and bar_index - b <= w
+f_pt(bool c, float p) => c ? p : 0.0
+f_px(float p) => str.tostring(p, format.mintick)
+f_grade(float s) => s >= 85 ? "A+" : s >= 75 ? "A" : s >= 65 ? "B" : "C"
+f_tf(string tf) =>
+    int s = timeframe.in_seconds(tf)
+    s < 3600 ? str.tostring(math.round(s / 60.0)) + "m" : s < 86400 ? str.tostring(math.round(s / 3600.0)) + "H" : s < 604800 ? str.tostring(math.round(s / 86400.0)) + "D" : s < 2419200 ? "W" : "M"
+
+float p1 = i_p1 / 100.0
+float p2 = math.min(i_p2 / 100.0, 1.0 - p1)
+float p3 = math.max(0.0, 1.0 - p1 - p2)
+float minScore = i_mode == "Conservative" ? 78.0 : i_mode == "Balanced" ? 68.0 : i_mode == "Aggressive" ? 58.0 : i_custom * 1.0
+
+// مستوى سيولة: قمة/قاع سوينغ لم يُسحب بعد
+type Liq
+    float px
+    float rsi
+    int   born
+    bool  eq = false
+
+// الصفقة الحالية + رسوماتها
+type Trade
+    int    dir   = 0
+    int    bar
+    string eng   = ""
+    float  score
+    float  entry
+    float  sl
+    float  sl0
+    float  risk
+    float  tp1
+    float  tp2
+    float  tp3
+    int    stage = 0
+    float  rem   = 1.0
+    float  realR = 0.0
+    line   lE
+    line   lS
+    line   l1
+    line   l2
+    line   l3
+    label  tE
+    label  tS
+    label  t1
+    label  t2
+    label  t3
+    box    bR
+    box    bP
+
+// إحصاءات كل الإشارات السابقة
+type Stats
+    int   n      = 0
+    int   wins   = 0
+    int   losses = 0
+    int   flat   = 0
+    int   h1     = 0
+    int   h2     = 0
+    int   h3     = 0
+    float sumR   = 0.0
+    float gW     = 0.0
+    float gL     = 0.0
+    int   nL     = 0
+    int   wL     = 0
+    int   nS     = 0
+    int   wS     = 0
+    int   nA     = 0
+    int   wA     = 0
+    int   nB     = 0
+    int   wB     = 0
+    int   streak = 0
+    int   maxStk = 0
+    float peak   = 0.0
+    float maxDD  = 0.0
+
+// فتح صفقة جديدة ورسم مستوياتها
+method start(Trade t, int d, float e, float s, string eng, float sc) =>
+    t.dir   := d
+    t.bar   := bar_index
+    t.eng   := eng
+    t.score := sc
+    t.entry := e
+    t.sl    := s
+    t.sl0   := s
+    t.risk  := math.max(math.abs(e - s), syminfo.mintick)
+    t.tp1   := e + d * t.risk * i_rr1
+    t.tp2   := e + d * t.risk * i_rr2
+    t.tp3   := e + d * t.risk * i_rr3
+    t.stage := 0
+    t.rem   := 1.0
+    t.realR := 0.0
+    if i_showLv
+        int   x2  = bar_index + i_ext
+        float fin = p3 > 0.0001 ? t.tp3 : p2 > 0.0001 ? t.tp2 : t.tp1
+        t.bR := box.new(bar_index, math.max(e, s), x2, math.min(e, s), border_color = color.new(i_cSL, 100), bgcolor = color.new(i_cSL, 88))
+        t.bP := box.new(bar_index, math.max(e, fin), x2, math.min(e, fin), border_color = color.new(i_cTP, 100), bgcolor = color.new(i_cTP, 91))
+        t.lE := line.new(bar_index, e, x2, e, color = i_cEn, style = line.style_dashed, width = 1)
+        t.lS := line.new(bar_index, s, x2, s, color = i_cSL, width = 2)
+        t.l1 := line.new(bar_index, t.tp1, x2, t.tp1, color = i_cTP, width = 1)
+        t.l2 := line.new(bar_index, t.tp2, x2, t.tp2, color = i_cTP, width = 1)
+        t.l3 := line.new(bar_index, t.tp3, x2, t.tp3, color = i_cTP, width = 2)
+        t.tE := label.new(x2, e, L("دخول ", "Entry ") + f_px(e), style = label.style_label_left, color = color.new(i_cEn, 15), textcolor = color.white, size = size.small)
+        t.tS := label.new(x2, s, L("وقف ", "SL ") + f_px(s), style = label.style_label_left, color = color.new(i_cSL, 10), textcolor = color.white, size = size.small)
+        t.t1 := label.new(x2, t.tp1, "TP1 " + f_px(t.tp1), style = label.style_label_left, color = color.new(i_cTP, 25), textcolor = color.white, size = size.small)
+        t.t2 := label.new(x2, t.tp2, "TP2 " + f_px(t.tp2), style = label.style_label_left, color = color.new(i_cTP, 15), textcolor = color.white, size = size.small)
+        t.t3 := label.new(x2, t.tp3, "TP3 " + f_px(t.tp3), style = label.style_label_left, color = color.new(i_cTP, 0), textcolor = color.white, size = size.small)
+    true
+
+// إغلاق الصفقة: تسعير الجزء المتبقي عند exitPx، تحديث الإحصاءات، وإنهاء الرسومات
+method finish(Trade t, Stats s, float exitPx, bool keep) =>
+    float r    = t.realR + t.rem * t.dir * (exitPx - t.entry) / t.risk
+    bool  win  = r > 0.0001
+    bool  loss = r < -0.0001
+    s.n    := s.n + 1
+    s.sumR := s.sumR + r
+    if win
+        s.wins   := s.wins + 1
+        s.gW     := s.gW + r
+        s.streak := 0
+    else if loss
+        s.losses := s.losses + 1
+        s.gL     := s.gL - r
+        s.streak := s.streak + 1
+        s.maxStk := math.max(s.maxStk, s.streak)
+    else
+        s.flat := s.flat + 1
+    if t.stage >= 1
+        s.h1 := s.h1 + 1
+    if t.stage >= 2
+        s.h2 := s.h2 + 1
+    if t.stage >= 3
+        s.h3 := s.h3 + 1
+    if t.dir == 1
+        s.nL := s.nL + 1
+        s.wL := s.wL + (win ? 1 : 0)
+    else
+        s.nS := s.nS + 1
+        s.wS := s.wS + (win ? 1 : 0)
+    if t.eng == "A"
+        s.nA := s.nA + 1
+        s.wA := s.wA + (win ? 1 : 0)
+    else
+        s.nB := s.nB + 1
+        s.wB := s.wB + (win ? 1 : 0)
+    s.peak  := math.max(s.peak, s.sumR)
+    s.maxDD := math.max(s.maxDD, s.peak - s.sumR)
+    if keep
+        line.set_x2(t.lE, bar_index)
+        line.set_x2(t.lS, bar_index)
+        line.set_x2(t.l1, bar_index)
+        line.set_x2(t.l2, bar_index)
+        line.set_x2(t.l3, bar_index)
+        box.set_right(t.bR, bar_index)
+        box.set_right(t.bP, bar_index)
+    else
+        line.delete(t.lE)
+        line.delete(t.lS)
+        line.delete(t.l1)
+        line.delete(t.l2)
+        line.delete(t.l3)
+        box.delete(t.bR)
+        box.delete(t.bP)
+    label.delete(t.tE)
+    label.delete(t.tS)
+    label.delete(t.t1)
+    label.delete(t.t2)
+    label.delete(t.t3)
+    t.dir := 0
+    r
+
+// إضافة مستوى سيولة مع رصد القمم/القيعان المتساوية
+f_addLiq(array<Liq> pool, float p, float r, float tol) =>
+    bool isEq = false
+    for q in pool
+        if math.abs(q.px - p) <= tol
+            isEq := true
+            q.eq := true
+    pool.unshift(Liq.new(p, r, bar_index, isEq))
+    if pool.size() > 12
+        pool.pop()
+    isEq
+
+// رصد سحب السيولة: ذيل يخترق المستوى ثم إغلاق عائد. أي مستوى مُخترق يُحذف.
+f_sweep(array<Liq> pool, bool bull) =>
+    bool  swept = false
+    bool  eq    = false
+    float lvl   = na
+    float rs    = na
+    int   n     = pool.size()
+    if n > 0
+        for i = n - 1 to 0
+            Liq  q       = pool.get(i)
+            bool pierced = bar_index > q.born and (bull ? low < q.px : high > q.px)
+            if pierced
+                bool reclaimed = bull ? close > q.px : close < q.px
+                if reclaimed
+                    swept := true
+                    eq    := eq or q.eq
+                    if na(lvl) or (bull ? q.px < lvl : q.px > lvl)
+                        lvl := q.px
+                        rs  := q.rsi
+                pool.remove(i)
+    [swept, eq, lvl, rs]
+
+// ════════════════════════════════════════════════════════════════════════════
+// 2) اتجاه الفريمات الأعلى (شمعة مُغلقة فقط → بدون إعادة رسم)
+// ════════════════════════════════════════════════════════════════════════════
+int    tfSec = timeframe.in_seconds()
+string aH1   = tfSec <= 180 ? "15" : tfSec <= 900 ? "60" : tfSec <= 3600 ? "240" : tfSec <= 14400 ? "D" : tfSec <= 86400 ? "W" : "M"
+string aH2   = tfSec <= 180 ? "60" : tfSec <= 900 ? "240" : tfSec <= 3600 ? "D" : tfSec <= 14400 ? "W" : tfSec <= 86400 ? "M" : "3M"
+string rH1   = i_htfAuto ? aH1 : i_htf1
+string rH2   = i_htfAuto ? aH2 : i_htf2
+string htf1  = timeframe.in_seconds(rH1) < tfSec ? timeframe.period : rH1
+string htf2  = timeframe.in_seconds(rH2) < tfSec ? timeframe.period : rH2
+
+// 1 = صاعد، -1 = هابط، 0 = محايد. الإزاحة [1] مع lookahead_on تُرجع آخر شمعة HTF مُغلقة.
+f_bias(int fastLen, int slowLen) =>
+    float ef = ta.ema(close, fastLen)
+    float es = ta.ema(close, slowLen)
+    int   b  = ef > es and close > es ? 1 : ef < es and close < es ? -1 : 0
+    b[1]
+
+int h1 = nz(request.security(syminfo.tickerid, htf1, f_bias(i_hFast, i_hSlow), lookahead = barmerge.lookahead_on))
+int h2 = nz(request.security(syminfo.tickerid, htf2, f_bias(i_hFast, i_hSlow), lookahead = barmerge.lookahead_on))
+
+// ════════════════════════════════════════════════════════════════════════════
+// 3) القياسات الأساسية على فريم الشارت
+// ════════════════════════════════════════════════════════════════════════════
+float atr     = ta.atr(14)
+float atrBase = ta.sma(atr, 100)
+float emaFast = ta.ema(close, i_emaFast)
+float emaMid  = ta.ema(close, i_emaMid)
+float emaSlow = ta.ema(close, i_emaSlow)
+float emaBase = ta.ema(close, i_emaBase)
+[stLine, stDir] = ta.supertrend(i_stMult, i_stLen)
+[diP, diM, adx] = ta.dmi(14, 14)
+
+// Kaufman Efficiency Ratio: 1 = حركة مستقيمة، 0 = ضجيج
+int   erLen = 20
+float erChg = math.abs(close - close[erLen])
+float erSum = math.sum(math.abs(close - close[1]), erLen)
+float er    = erSum > 0 ? erChg / erSum : 0.0
+
+// الزخم
+float rsi = ta.rsi(close, 14)
+[macdLine, macdSig, hist] = ta.macd(close, 12, 26, 9)
+float stK   = ta.sma(ta.stoch(rsi, rsi, rsi, 14), 3)
+float stD   = ta.sma(stK, 3)
+int   bsUp  = ta.barssince(ta.crossover(stK, stD))
+int   bsDn  = ta.barssince(ta.crossunder(stK, stD))
+bool  kUp   = not na(bsUp) and bsUp <= 3 and stK > stD
+bool  kDn   = not na(bsDn) and bsDn <= 3 and stK < stD
+float rsiLo = ta.lowest(rsi, 5)
+float rsiHi = ta.highest(rsi, 5)
+float rsiL3 = ta.lowest(rsi, 3)
+float rsiH3 = ta.highest(rsi, 3)
+
+// تشريح الشمعة
+float rng      = high - low
+float body     = math.abs(close - open)
+float closeLoc = rng > 0 ? (close - low) / rng : 0.5
+float dnWick   = rng > 0 ? (math.min(open, close) - low) / rng : 0.0
+float upWick   = rng > 0 ? (high - math.max(open, close)) / rng : 0.0
+
+// الحجم + تقدير ضغط الشراء/البيع من موقع الإغلاق داخل الشمعة
+float vol    = nz(volume)
+float volMa  = ta.sma(vol, 20)
+bool  hasVol = volMa > 0
+float relVol = hasVol ? vol / volMa : 1.0
+float delta  = rng > 0 ? vol * (2 * close - high - low) / rng : 0.0
+float deltaE = ta.ema(delta, 10)
+
+// القيمة العادلة: VWAP اليومي داخل اليوم، وإلا EMA base
+[vwV, vwU, vwL] = ta.vwap(hlc3, timeframe.change("D"), 2.0)
+bool  vwOK   = timeframe.isintraday and not na(vwV)
+float valRef = vwOK ? vwV : emaBase
+
+// نطاقات مرجعية
+float loN    = ta.lowest(low, i_slLook)
+float hiN    = ta.highest(high, i_slLook)
+float pbLow  = ta.lowest(low, i_pbWin)
+float pbHigh = ta.highest(high, i_pbWin)
+float lo5    = ta.lowest(low, 5)
+float hi5    = ta.highest(high, 5)
+float rngMid = (ta.highest(high, 50) + ta.lowest(low, 50)) / 2
+
+// ════════════════════════════════════════════════════════════════════════════
+// 4) المحرك A — ارتداد مع الاتجاه
+// ════════════════════════════════════════════════════════════════════════════
+bool upTr = emaMid > emaSlow and close > emaSlow
+bool dnTr = emaMid < emaSlow and close < emaSlow
+
+// آخر شمعة لمست منطقة القيمة أثناء اتجاه قائم
+var int pbL = na
+var int pbS = na
+if emaMid > emaSlow and low <= emaMid + atr * i_pbTol
+    pbL := bar_index
+if emaMid < emaSlow and high >= emaMid - atr * i_pbTol
+    pbS := bar_index
+
+var int lastAL = na
+var int lastAS = na
+// شمعة التأكيد: تُغلق فوق EMA trigger وتكسر قمة الشمعة السابقة (والعكس للبيع)
+bool trigAL = upTr and f_in(pbL, i_pbWin) and (na(lastAL) or pbL > lastAL) and close > open and close > emaFast and close > high[1] and closeLoc >= 0.5
+bool trigAS = dnTr and f_in(pbS, i_pbWin) and (na(lastAS) or pbS > lastAS) and close < open and close < emaFast and close < low[1] and closeLoc <= 0.5
+
+// ════════════════════════════════════════════════════════════════════════════
+// 5) المحرك B — انعكاس بعد سحب السيولة
+// ════════════════════════════════════════════════════════════════════════════
+float ph       = ta.pivothigh(high, i_swing, i_swing)
+float pl       = ta.pivotlow(low, i_swing, i_swing)
+float rsiPivLo = rsiL3[i_swing - 1]
+float rsiPivHi = rsiH3[i_swing - 1]
+
+var array<Liq> highsPool = array.new<Liq>()
+var array<Liq> lowsPool  = array.new<Liq>()
+if not na(ph)
+    f_addLiq(highsPool, ph, rsiPivHi, atr * i_eqTol)
+if not na(pl)
+    f_addLiq(lowsPool, pl, rsiPivLo, atr * i_eqTol)
+
+[lqL, lqLEq, lqLLvl, lqLRsi] = f_sweep(lowsPool, true)
+[lqS, lqSEq, lqSLvl, lqSRsi] = f_sweep(highsPool, false)
+
+// ذاكرة آخر سحب: الشمعة، أقصى امتداد، المستوى، جودة الذيل، تجمع سيولة، دايفرجنس
+var int   swLBar  = na
+var float swLExt  = na
+var float swLLvl  = na
+var float swLHigh = na
+var float swLWick = 0.0
+var bool  swLEq   = false
+var bool  swLDiv  = false
+var int   swSBar  = na
+var float swSExt  = na
+var float swSLvl  = na
+var float swSLow  = na
+var float swSWick = 0.0
+var bool  swSEq   = false
+var bool  swSDiv  = false
+
+if lqL
+    swLBar  := bar_index
+    swLExt  := low
+    swLLvl  := lqLLvl
+    swLHigh := high
+    swLWick := dnWick
+    swLEq   := lqLEq
+    swLDiv  := not na(lqLRsi) and rsiL3 > lqLRsi + 1.0
+else if f_in(swLBar, i_swWin)
+    swLExt := math.min(swLExt, low)
+    if close < swLLvl
+        swLBar := na
+
+if lqS
+    swSBar  := bar_index
+    swSExt  := high
+    swSLvl  := lqSLvl
+    swSLow  := low
+    swSWick := upWick
+    swSEq   := lqSEq
+    swSDiv  := not na(lqSRsi) and rsiH3 < lqSRsi - 1.0
+else if f_in(swSBar, i_swWin)
+    swSExt := math.max(swSExt, high)
+    if close > swSLvl
+        swSBar := na
+
+// التأكيد: على شمعة السحب نفسها إن كانت شمعة رفض قوية، أو بكسر قمة/قاع الشمعة السابقة بعدها
+bool trigBL = f_in(swLBar, i_swWin) and close > open and close > swLLvl and (bar_index == swLBar ? swLWick >= 0.4 and closeLoc >= 0.6 : close > high[1])
+bool trigBS = f_in(swSBar, i_swWin) and close < open and close < swSLvl and (bar_index == swSBar ? swSWick >= 0.4 and closeLoc <= 0.4 : close < low[1])
+
+// ════════════════════════════════════════════════════════════════════════════
+// 6) البوابات الإلزامية
+// ════════════════════════════════════════════════════════════════════════════
+bool sess1In  = not na(time(timeframe.period, i_sess1, i_tz))
+bool sess2In  = not na(time(timeframe.period, i_sess2, i_tz))
+bool sessOK   = not i_useSess or sess1In or sess2In
+bool spikeOK  = rng <= i_spike * atr
+bool volatOK  = not i_useVolat or atr >= atrBase * i_minVol
+bool regimeOK = not i_useRegime or adx >= i_adxMin or er >= 0.25
+bool htfL     = i_htfGate == "Off" or (i_htfGate == "Strict" ? h1 == 1 and h2 != -1 : h1 != -1)
+bool htfS     = i_htfGate == "Off" or (i_htfGate == "Strict" ? h1 == -1 and h2 != 1 : h1 != 1)
+bool sideL    = i_side != "Short only"
+bool sideS    = i_side != "Long only"
+bool extL     = close - emaMid <= i_extMax * atr
+bool extS     = emaMid - close <= i_extMax * atr
+
+bool okAL = i_engA and trigAL and extL and spikeOK and volatOK and regimeOK and htfL and sideL
+bool okAS = i_engA and trigAS and extS and spikeOK and volatOK and regimeOK and htfS and sideS
+bool okBL = i_engB and trigBL and spikeOK and volatOK and htfL and sideL
+bool okBS = i_engB and trigBS and spikeOK and volatOK and htfS and sideS
+
+// ════════════════════════════════════════════════════════════════════════════
+// 7) محرك النقاط (0-100)
+//    الفريمات الأعلى 20 · الهيكل 15 · حالة السوق 15 · الزخم 20 · الحجم 10 · الموقع 10 · الشمعة 10
+// ════════════════════════════════════════════════════════════════════════════
+// مشترك بين المحرّكين
+float sHtfL = (h1 == 1 ? 12.0 : h1 == 0 ? 4.0 : 0.0) + (h2 == 1 ? 8.0 : h2 == 0 ? 3.0 : 0.0)
+float sHtfS = (h1 == -1 ? 12.0 : h1 == 0 ? 4.0 : 0.0) + (h2 == -1 ? 8.0 : h2 == 0 ? 3.0 : 0.0)
+float sMomL = f_pt(rsi > rsi[1], 4) + f_pt(hist > hist[1], 5) + f_pt(kUp, 6)
+float sMomS = f_pt(rsi < rsi[1], 4) + f_pt(hist < hist[1], 5) + f_pt(kDn, 6)
+float sVolL = hasVol ? f_pt(relVol >= 1.0, 4) + f_pt(relVol >= 1.5, 3) + f_pt(deltaE > 0, 3) : 6.0
+float sVolS = hasVol ? f_pt(relVol >= 1.0, 4) + f_pt(relVol >= 1.5, 3) + f_pt(deltaE < 0, 3) : 6.0
+float sBody = body >= 0.5 * atr ? 3.0 : body >= 0.3 * atr ? 1.5 : 0.0
+float sCanL = (closeLoc >= 0.7 ? 4.0 : closeLoc >= 0.55 ? 2.0 : 0.0) + sBody + f_pt(close > high[1], 3)
+float sCanS = (closeLoc <= 0.3 ? 4.0 : closeLoc <= 0.45 ? 2.0 : 0.0) + sBody + f_pt(close < low[1], 3)
+float sEr   = er >= 0.30 ? 5.0 : er >= 0.18 ? 2.5 : 0.0
+
+// المحرك A
+float sStAL = f_pt(emaMid > emaSlow, 4) + f_pt(close > emaBase, 4) + f_pt(stDir < 0, 4) + f_pt(emaSlow > emaSlow[3], 3)
+float sStAS = f_pt(emaMid < emaSlow, 4) + f_pt(close < emaBase, 4) + f_pt(stDir > 0, 4) + f_pt(emaSlow < emaSlow[3], 3)
+float sRgAL = f_pt(adx >= i_adxMin, 5) + f_pt(adx > adx[2], 2) + f_pt(diP > diM, 3) + sEr
+float sRgAS = f_pt(adx >= i_adxMin, 5) + f_pt(adx > adx[2], 2) + f_pt(diM > diP, 3) + sEr
+float sMoAL = sMomL + f_pt(rsi > 50, 5)
+float sMoAS = sMomS + f_pt(rsi < 50, 5)
+float sLcAL = f_pt(close > valRef, 5) + (pbLow >= emaSlow - 0.25 * atr ? 5.0 : 2.0)
+float sLcAS = f_pt(close < valRef, 5) + (pbHigh <= emaSlow + 0.25 * atr ? 5.0 : 2.0)
+float scAL  = sHtfL + sStAL + sRgAL + sMoAL + sVolL + sLcAL + sCanL
+float scAS  = sHtfS + sStAS + sRgAS + sMoAS + sVolS + sLcAS + sCanS
+
+// المحرك B
+float sStBL = (swLWick >= 0.5 ? 5.0 : swLWick >= 0.3 ? 3.0 : 0.0) + f_pt(swLEq, 4) + f_pt(close > swLHigh, 3) + f_pt(bar_index - swLBar <= 1, 3)
+float sStBS = (swSWick >= 0.5 ? 5.0 : swSWick >= 0.3 ? 3.0 : 0.0) + f_pt(swSEq, 4) + f_pt(close < swSLow, 3) + f_pt(bar_index - swSBar <= 1, 3)
+float sRgBL = (rsiLo < 30 ? 6.0 : rsiLo < 38 ? 4.0 : 0.0) + f_pt(swLDiv, 5) + f_pt(lo5 <= emaMid - 2 * atr or (vwOK and lo5 <= vwL), 4)
+float sRgBS = (rsiHi > 70 ? 6.0 : rsiHi > 62 ? 4.0 : 0.0) + f_pt(swSDiv, 5) + f_pt(hi5 >= emaMid + 2 * atr or (vwOK and hi5 >= vwU), 4)
+float sMoBL = sMomL + f_pt(rsiLo < 38, 5)
+float sMoBS = sMomS + f_pt(rsiHi > 62, 5)
+float sLcBL = f_pt(close < rngMid, 5) + f_pt(emaMid - close >= 0.8 * atr, 5)
+float sLcBS = f_pt(close > rngMid, 5) + f_pt(close - emaMid >= 0.8 * atr, 5)
+float scBL  = sHtfL + sStBL + sRgBL + sMoBL + sVolL + sLcBL + sCanL
+float scBS  = sHtfS + sStBS + sRgBS + sMoBS + sVolS + sLcBS + sCanS
+
+// أفضل مرشح لكل اتجاه
+float  longScore  = 0.0
+string longEng    = ""
+float  shortScore = 0.0
+string shortEng   = ""
+if okAL and scAL >= minScore
+    longScore := scAL
+    longEng   := "A"
+if okBL and scBL >= minScore and scBL > longScore
+    longScore := scBL
+    longEng   := "B"
+if okAS and scAS >= minScore
+    shortScore := scAS
+    shortEng   := "A"
+if okBS and scBS >= minScore and scBS > shortScore
+    shortScore := scBS
+    shortEng   := "B"
+
+int sigDir = longScore > 0 and longScore >= shortScore ? 1 : shortScore > 0 ? -1 : 0
+
+// ════════════════════════════════════════════════════════════════════════════
+// 8) إدارة الصفقة والإحصاءات
+// ════════════════════════════════════════════════════════════════════════════
+var Trade T = Trade.new()
+var Stats S = Stats.new()
+var int lastSigBar = na
+
+bool  evTP1   = false
+bool  evTP2   = false
+bool  evTP3   = false
+bool  evSL    = false
+bool  evBE    = false
+bool  evTime  = false
+bool  evFlip  = false
+float pxEvTP1 = na
+float pxEvTP2 = na
+float pxEvTP3 = na
+float pxEvSL  = na
+float closedR = na
+
+if T.dir != 0 and bar_index > T.bar
+    bool  done    = false
+    float exitPx  = na
+    bool  stopHit = T.dir == 1 ? low <= T.sl : high >= T.sl
+    if stopHit
+        // إذا لُمس الوقف والهدف في نفس الشمعة نفترض الوقف أولًا (افتراض متحفظ)
+        exitPx := T.dir == 1 ? math.min(T.sl, open) : math.max(T.sl, open)
+        pxEvSL := T.sl
+        done   := true
+        if T.stage == 0
+            evSL := true
+        else
+            evBE := true
+    else
+        if T.stage == 0 and (T.dir == 1 ? high >= T.tp1 : low <= T.tp1)
+            T.stage := 1
+            T.realR := T.realR + p1 * i_rr1
+            T.rem   := T.rem - p1
+            evTP1   := true
+            pxEvTP1 := T.tp1
+            if i_be
+                T.sl := T.entry
+                line.set_y1(T.lS, T.sl)
+                line.set_y2(T.lS, T.sl)
+                label.set_y(T.tS, T.sl)
+                label.set_text(T.tS, L("وقف ← تعادل ", "SL → BE ") + f_px(T.sl))
+        if T.stage == 1 and T.rem > 0.0001 and (T.dir == 1 ? high >= T.tp2 : low <= T.tp2)
+            T.stage := 2
+            T.realR := T.realR + p2 * i_rr2
+            T.rem   := T.rem - p2
+            evTP2   := true
+            pxEvTP2 := T.tp2
+            if i_trail
+                T.sl := T.tp1
+                line.set_y1(T.lS, T.sl)
+                line.set_y2(T.lS, T.sl)
+                label.set_y(T.tS, T.sl)
+                label.set_text(T.tS, L("وقف ← TP1 ", "SL → TP1 ") + f_px(T.sl))
+        if T.stage == 2 and T.rem > 0.0001 and (T.dir == 1 ? high >= T.tp3 : low <= T.tp3)
+            T.stage := 3
+            T.realR := T.realR + T.rem * i_rr3
+            T.rem   := 0.0
+            evTP3   := true
+            pxEvTP3 := T.tp3
+        if T.rem <= 0.0001
+            T.rem  := 0.0
+            exitPx := T.entry
+            done   := true
+        else if i_maxBars > 0 and bar_index - T.bar >= i_maxBars
+            exitPx := close
+            done   := true
+            evTime := true
+    if done
+        closedR := T.finish(S, exitPx, i_keep)
+    else
+        int x2 = bar_index + i_ext
+        line.set_x2(T.lE, x2)
+        line.set_x2(T.lS, x2)
+        line.set_x2(T.l1, x2)
+        line.set_x2(T.l2, x2)
+        line.set_x2(T.l3, x2)
+        box.set_right(T.bR, x2)
+        box.set_right(T.bP, x2)
+        label.set_x(T.tE, x2)
+        label.set_x(T.tS, x2)
+        label.set_x(T.t1, x2)
+        label.set_x(T.t2, x2)
+        label.set_x(T.t3, x2)
+
+// ── إشارة جديدة (عند إغلاق الشمعة فقط)
+bool  buySig   = false
+bool  sellSig  = false
+float sigScore = na
+
+bool coolOK  = na(lastSigBar) or bar_index - lastSigBar >= i_cool
+bool canEval = barstate.isconfirmed and sessOK and coolOK and sigDir != 0
+
+if canEval
+    // صفقة قائمة تمنع الإشارة الجديدة إلا إذا أُمِّن TP1 أو كانت الإشارة معاكسة (حسب الإعدادات)
+    bool blocked = T.dir != 0 and not ((i_reentry and T.stage >= 1) or (i_rev and T.dir != sigDir))
+    if not blocked
+        if T.dir != 0
+            closedR := T.finish(S, close, i_keep)
+            evFlip  := true
+        string eng     = sigDir == 1 ? longEng : shortEng
+        float  sc      = sigDir == 1 ? longScore : shortScore
+        float  base    = sigDir == 1 ? (eng == "B" ? swLExt : loN) : (eng == "B" ? swSExt : hiN)
+        float  rawRisk = i_slMode == "ATR" ? i_atrSL * atr : math.abs(close - base) + i_slBuf * atr
+        float  risk    = math.max(math.min(rawRisk, i_maxRisk * atr), i_minRisk * atr)
+        float  slPx    = math.round_to_mintick(close - sigDir * risk)
+        T.start(sigDir, close, slPx, eng, sc)
+        buySig     := sigDir == 1
+        sellSig    := sigDir == -1
+        sigScore   := sc
+        lastSigBar := bar_index
+        // استهلاك الإعداد حتى لا تتكرر الإشارة على الحدث نفسه
+        if sigDir == 1
+            lastAL := bar_index
+            swLBar := na
+        else
+            lastAS := bar_index
+            swSBar := na
+
+        // ملصق الإشارة + تفصيل النقاط عند تمرير الفأرة
+        float  cHtf = sigDir == 1 ? sHtfL : sHtfS
+        float  cStr = sigDir == 1 ? (eng == "A" ? sStAL : sStBL) : (eng == "A" ? sStAS : sStBS)
+        float  cReg = sigDir == 1 ? (eng == "A" ? sRgAL : sRgBL) : (eng == "A" ? sRgAS : sRgBS)
+        float  cMom = sigDir == 1 ? (eng == "A" ? sMoAL : sMoBL) : (eng == "A" ? sMoAS : sMoBS)
+        float  cVol = sigDir == 1 ? sVolL : sVolS
+        float  cLoc = sigDir == 1 ? (eng == "A" ? sLcAL : sLcBL) : (eng == "A" ? sLcAS : sLcBS)
+        float  cCan = sigDir == 1 ? sCanL : sCanS
+        string engName = eng == "A" ? L("ارتداد مع الاتجاه", "Trend pullback") : L("انعكاس بعد سحب السيولة", "Liquidity-sweep reversal")
+        string sideTxt = sigDir == 1 ? L("شراء", "BUY") : L("بيع", "SELL")
+        string txt = sideTxt + "\n" + str.tostring(sc, "#") + " · " + f_grade(sc)
+        string tip = sideTxt + " · " + engName + "\n" + L("النقاط: ", "Score: ") + str.tostring(sc, "#.#") + " / 100  (" + f_grade(sc) + ")\n" + "HTF " + str.tostring(cHtf, "#.#") + "/20 · " + L("هيكل ", "Structure ") + str.tostring(cStr, "#.#") + "/15 · " + L("حالة السوق ", "Regime ") + str.tostring(cReg, "#.#") + "/15\n" + L("زخم ", "Momentum ") + str.tostring(cMom, "#.#") + "/20 · " + L("حجم ", "Volume ") + str.tostring(cVol, "#.#") + "/10 · " + L("موقع ", "Location ") + str.tostring(cLoc, "#.#") + "/10 · " + L("شمعة ", "Candle ") + str.tostring(cCan, "#.#") + "/10\n" + L("دخول ", "Entry ") + f_px(T.entry) + " · " + L("وقف ", "SL ") + f_px(T.sl) + " (" + str.tostring(T.risk / atr, "#.##") + " ATR)\n" + "TP1 " + f_px(T.tp1) + " · TP2 " + f_px(T.tp2) + " · TP3 " + f_px(T.tp3)
+        if sigDir == 1
+            label.new(bar_index, low, txt, yloc = yloc.belowbar, style = label.style_label_up, color = i_cBull, textcolor = color.white, size = size.small, tooltip = tip)
+        else
+            label.new(bar_index, high, txt, yloc = yloc.abovebar, style = label.style_label_down, color = i_cBear, textcolor = color.white, size = size.small, tooltip = tip)
+
+        // تنبيه ديناميكي كامل (اختر "Any alert() function call")
+        string sideEn = sigDir == 1 ? "BUY" : "SELL"
+        string msg = i_json ? '{"indicator":"APEX","side":"' + sideEn + '","symbol":"' + syminfo.ticker + '","tf":"' + timeframe.period + '","engine":"' + eng + '","score":' + str.tostring(sc, "#.#") + ',"entry":' + str.tostring(T.entry) + ',"sl":' + str.tostring(T.sl) + ',"tp1":' + str.tostring(T.tp1) + ',"tp2":' + str.tostring(T.tp2) + ',"tp3":' + str.tostring(T.tp3) + '}' : "APEX " + sideEn + " " + syminfo.ticker + " [" + timeframe.period + "] | Score " + str.tostring(sc, "#") + " " + f_grade(sc) + " | Entry " + f_px(T.entry) + " | SL " + f_px(T.sl) + " | TP1 " + f_px(T.tp1) + " | TP2 " + f_px(T.tp2) + " | TP3 " + f_px(T.tp3)
+        alert(msg, alert.freq_once_per_bar_close)
+
+if evTP1 or evTP2 or evTP3 or evSL or evBE
+    string evTxt = evSL ? "Stop loss hit" : evTP3 ? "TP3 hit" : evTP2 ? "TP2 hit" : evTP1 ? "TP1 hit" : "Runner stopped (protected stop)"
+    alert("APEX " + syminfo.ticker + " [" + timeframe.period + "]: " + evTxt, alert.freq_once_per_bar_close)
+
+// ════════════════════════════════════════════════════════════════════════════
+// 9) الرسم على الشارت
+// ════════════════════════════════════════════════════════════════════════════
+color cNeu     = #787B86
+color trendCol = upTr ? i_cBull : dnTr ? i_cBear : cNeu
+pMid  = plot(i_cloud ? emaMid : na, "EMA value", color = color.new(trendCol, 35), linewidth = 1)
+pSlow = plot(i_cloud ? emaSlow : na, "EMA trend", color = color.new(trendCol, 55), linewidth = 1)
+fill(pMid, pSlow, color = color.new(trendCol, 86), title = "Trend cloud")
+plot(i_showBas ? emaBase : na, "EMA base", color = color.new(#F5A623, 20), linewidth = 2)
+plot(i_showVw and vwOK ? vwV : na, "VWAP", color = color.new(#B388FF, 10), linewidth = 1)
+
+color barC = upTr and h1 >= 0 ? i_cBull : dnTr and h1 <= 0 ? i_cBear : cNeu
+barcolor(i_barCol ? barC : na, title = "Trend bar color")
+
+// أحداث الصفقة
+plotshape(evTP1 ? pxEvTP1 : na, "TP1 hit", shape.circle, location.absolute, color.new(i_cTP, 30), size = size.tiny)
+plotshape(evTP2 ? pxEvTP2 : na, "TP2 hit", shape.circle, location.absolute, color.new(i_cTP, 0), size = size.tiny)
+plotshape(evTP3 ? pxEvTP3 : na, "TP3 hit", shape.diamond, location.absolute, color.new(i_cTP, 0), size = size.tiny)
+plotshape(evSL ? pxEvSL : na, "Stop loss hit", shape.xcross, location.absolute, color.new(i_cSL, 0), size = size.tiny)
+plotshape(evBE ? pxEvSL : na, "Protected stop hit", shape.cross, location.absolute, color.new(cNeu, 0), size = size.tiny)
+
+// قيم مخفية تُستخدم في رسائل التنبيه ونافذة البيانات
+plot(buySig or sellSig ? T.entry : na, "Signal Entry", display = display.none)
+plot(buySig or sellSig ? T.sl : na, "Signal SL", display = display.none)
+plot(buySig or sellSig ? T.tp1 : na, "Signal TP1", display = display.none)
+plot(buySig or sellSig ? T.tp2 : na, "Signal TP2", display = display.none)
+plot(buySig or sellSig ? T.tp3 : na, "Signal TP3", display = display.none)
+plot(sigScore, "Signal Score", display = display.none)
+plot(scAL, "Bull pressure (Engine A score)", color = i_cBull, display = display.data_window)
+plot(scAS, "Bear pressure (Engine A score)", color = i_cBear, display = display.data_window)
+
+// ════════════════════════════════════════════════════════════════════════════
+// 10) لوحة المعلومات
+// ════════════════════════════════════════════════════════════════════════════
+string dPos = i_pos == "Top right" ? position.top_right : i_pos == "Top left" ? position.top_left : i_pos == "Bottom right" ? position.bottom_right : i_pos == "Bottom left" ? position.bottom_left : position.middle_right
+string dSz  = i_dsz == "Tiny" ? size.tiny : i_dsz == "Small" ? size.small : size.normal
+color  cRow = color.new(#0E1525, 6)
+color  cKey = #B4BFD6
+color  cVal = #FFFFFF
+var table tb = table.new(dPos, 2, 21, bgcolor = cRow, frame_color = #2A3654, frame_width = 1, border_color = color.new(#2A3654, 55), border_width = 1)
+
+f_row(int r, string k, string v, color c) =>
+    table.cell(tb, 0, r, k, text_color = cKey, text_size = dSz, text_halign = text.align_left, bgcolor = cRow)
+    table.cell(tb, 1, r, v, text_color = c, text_size = dSz, text_halign = text.align_right, bgcolor = cRow)
+
+f_head(int r, string k, color bg) =>
+    table.cell(tb, 0, r, k, text_color = color.white, text_size = dSz, text_halign = text.align_center, bgcolor = bg)
+    table.merge_cells(tb, 0, r, 1, r)
+
+f_biasTxt(int b) => b == 1 ? L("صاعد ▲", "Bull ▲") : b == -1 ? L("هابط ▼", "Bear ▼") : L("محايد ◆", "Neutral ◆")
+f_biasCol(int b) => b == 1 ? i_cBull : b == -1 ? i_cBear : cNeu
+f_pct(int a, int b) => b > 0 ? str.tostring(100.0 * a / b, "#.#") + "%" : "—"
+
+string h1Name = f_tf(htf1)
+string h2Name = f_tf(htf2)
+
+if i_dash and barstate.islast
+    int    loc     = upTr ? 1 : dnTr ? -1 : 0
+    bool   quiet   = atr < atrBase * i_minVol
+    bool   trendy  = adx >= i_adxMin or er >= 0.25
+    string regTxt  = quiet ? L("هادئ جدًا", "Quiet") : trendy ? L("اتجاهي", "Trending") : L("عرضي", "Ranging")
+    color  regCol  = quiet ? cNeu : trendy ? i_cBull : #F5A623
+    float  liveR   = T.dir != 0 ? T.realR + T.rem * T.dir * (close - T.entry) / T.risk : 0.0
+    string pfTxt   = S.gL > 0 ? str.tostring(S.gW / S.gL, "#.##") : S.gW > 0 ? "∞" : "—"
+    float  pfVal   = S.gL > 0 ? S.gW / S.gL : 1.0
+    float  wr      = S.n > 0 ? 100.0 * S.wins / S.n : 0.0
+
+    f_head(0, "APEX Scalper Pro", color.new(#2D5BFF, 0))
+    f_row(1, L("اتجاه ", "Bias ") + h1Name, f_biasTxt(h1), f_biasCol(h1))
+    f_row(2, L("اتجاه ", "Bias ") + h2Name, f_biasTxt(h2), f_biasCol(h2))
+    f_row(3, L("اتجاه الشارت", "Chart trend"), f_biasTxt(loc), f_biasCol(loc))
+    f_row(4, L("حالة السوق", "Regime"), regTxt + " · ADX " + str.tostring(adx, "#"), regCol)
+    f_row(5, "RSI", str.tostring(rsi, "#.#"), rsi >= 55 ? i_cBull : rsi <= 45 ? i_cBear : cVal)
+    f_row(6, L("الحجم النسبي", "Relative volume"), hasVol ? "×" + str.tostring(relVol, "#.##") : "—", relVol >= 1.5 ? i_cBull : cVal)
+    f_row(7, L("ضغط شراء / بيع", "Bull / Bear pressure"), str.tostring(scAL, "#") + " / " + str.tostring(scAS, "#"), scAL > scAS ? i_cBull : scAS > scAL ? i_cBear : cVal)
+    f_row(8, L("حد الإشارة", "Signal threshold"), str.tostring(minScore, "#") + " · " + i_mode, cVal)
+
+    f_head(9, L("الصفقة الحالية", "Active trade"), color.new(#1B2740, 0))
+    if T.dir != 0
+        f_row(10, T.dir == 1 ? L("شراء", "LONG") : L("بيع", "SHORT"), f_px(T.entry) + " · " + str.tostring(T.score, "#") + " " + f_grade(T.score), T.dir == 1 ? i_cBull : i_cBear)
+        f_row(11, L("الوقف", "Stop"), f_px(T.sl), i_cSL)
+        f_row(12, L("النتيجة الحالية", "Open result"), (liveR >= 0 ? "+" : "") + str.tostring(liveR, "#.##") + " R · TP" + str.tostring(T.stage), liveR >= 0 ? i_cBull : i_cBear)
+    else
+        f_row(10, L("لا توجد صفقة", "No open trade"), "—", cNeu)
+        f_row(11, L("الوقف", "Stop"), "—", cNeu)
+        f_row(12, L("النتيجة الحالية", "Open result"), "—", cNeu)
+
+    f_head(13, L("أداء الإشارات على هذا الشارت", "Signal performance on this chart"), color.new(#1B2740, 0))
+    f_row(14, L("عدد الصفقات", "Closed trades"), str.tostring(S.n) + "  (" + str.tostring(S.wins) + " / " + str.tostring(S.losses) + " / " + str.tostring(S.flat) + ")", cVal)
+    f_row(15, L("نسبة الفوز", "Win rate"), f_pct(S.wins, S.n), wr >= 60 ? i_cBull : wr >= 45 ? cVal : i_cBear)
+    f_row(16, L("وصول TP1 / TP2 / TP3", "Reached TP1 / TP2 / TP3"), f_pct(S.h1, S.n) + " / " + f_pct(S.h2, S.n) + " / " + f_pct(S.h3, S.n), cVal)
+    f_row(17, L("صافي R · المتوسط", "Net R · average"), (S.sumR >= 0 ? "+" : "") + str.tostring(S.sumR, "#.#") + " R · " + (S.n > 0 ? str.tostring(S.sumR / S.n, "#.##") : "—"), S.sumR >= 0 ? i_cBull : i_cBear)
+    f_row(18, L("معامل الربح · أقصى تراجع", "Profit factor · max drawdown"), pfTxt + " · " + str.tostring(S.maxDD, "#.#") + " R", pfVal >= 1.3 ? i_cBull : pfVal >= 1.0 ? cVal : i_cBear)
+    f_row(19, L("المحرك A · B", "Engine A · B"), f_pct(S.wA, S.nA) + " (" + str.tostring(S.nA) + ") · " + f_pct(S.wB, S.nB) + " (" + str.tostring(S.nB) + ")", cVal)
+    f_row(20, L("شراء · بيع", "Long · Short"), f_pct(S.wL, S.nL) + " (" + str.tostring(S.nL) + ") · " + f_pct(S.wS, S.nS) + " (" + str.tostring(S.nS) + ")", cVal)
+
+// ════════════════════════════════════════════════════════════════════════════
+// 11) شروط التنبيه الجاهزة
+// ════════════════════════════════════════════════════════════════════════════
+alertcondition(buySig, "APEX BUY", 'APEX BUY {{ticker}} ({{interval}}) | Entry {{plot("Signal Entry")}} | SL {{plot("Signal SL")}} | TP1 {{plot("Signal TP1")}} | TP2 {{plot("Signal TP2")}} | TP3 {{plot("Signal TP3")}} | Score {{plot("Signal Score")}}')
+alertcondition(sellSig, "APEX SELL", 'APEX SELL {{ticker}} ({{interval}}) | Entry {{plot("Signal Entry")}} | SL {{plot("Signal SL")}} | TP1 {{plot("Signal TP1")}} | TP2 {{plot("Signal TP2")}} | TP3 {{plot("Signal TP3")}} | Score {{plot("Signal Score")}}')
+alertcondition(buySig or sellSig, "APEX Any signal", 'APEX signal {{ticker}} ({{interval}}) | Entry {{plot("Signal Entry")}} | SL {{plot("Signal SL")}} | TP1 {{plot("Signal TP1")}}')
+alertcondition(evTP1, "APEX TP1 hit", "APEX {{ticker}}: TP1 reached")
+alertcondition(evTP2, "APEX TP2 hit", "APEX {{ticker}}: TP2 reached")
+alertcondition(evTP3, "APEX TP3 hit", "APEX {{ticker}}: TP3 reached")
+alertcondition(evSL, "APEX Stop loss hit", "APEX {{ticker}}: stop loss hit")
+alertcondition(evBE, "APEX Protected stop hit", "APEX {{ticker}}: runner stopped at breakeven / trailed stop")
