@@ -7,6 +7,9 @@
 //                 القيمة (EMA 21/50) → شمعة تأكيد تستأنف الاتجاه.
 //    المحرك B  ·  انعكاس بعد سحب السيولة (Liquidity Sweep): كسر كاذب لقاع/قمة سوينغ
 //                 ثم إغلاق عائد فوقه/تحته مع تشبّع ودايفرجنس.
+//  قفل الاتجاه (Trend Lock): لون السحابة والشموع لا يتغير إلا بعد كسر مؤكَّد
+//  (خط تتبّع عريض + كسر قمة/قاع النطاق + حد أدنى من الشموع بين كل تغيّرين)،
+//  فلا يتقلّب اللون في الحركة العرضية. الإشارات تتبع اتجاه القفل.
 //  كل إشارة تمر عبر بوابات إلزامية ثم تُقيَّم من 100 نقطة على 7 محاور:
 //    الفريمات الأعلى · الهيكل · حالة السوق · الزخم · الحجم · الموقع · شمعة الدخول.
 //  بعد الإشارة يدير المؤشر الصفقة: وقف + 3 أهداف + نقل الوقف للتعادل، ويحسب
@@ -45,7 +48,23 @@ i_htfGate = input.string("Balanced", "HTF gate · بوابة الفريم الأ
 i_hFast   = input.int(20, "HTF EMA fast", minval = 2, inline = "h", group = G2)
 i_hSlow   = input.int(50, "slow", minval = 5, inline = "h", group = G2)
 
-string G3 = "③ Engine A · Trend pullback"
+string GT = "③ Trend lock · قفل الاتجاه (لون السحابة)"
+i_tlMode  = input.string("Slow", "Trend sensitivity · حساسية الاتجاه", options = ["Fast", "Balanced", "Slow", "Very slow", "Custom"], group = GT,
+     tooltip = "يتحكم في متى يتغير لون السحابة والشموع. كلما كان أبطأ قلّ الانخداع بالحركة العرضية وتأخر التغيّر.\n\nFast: خط 2.5 ATR · نطاق 10 شموع · تأكيد 1 · انتظار 3\nBalanced: 3.5 ATR · 20 · 2 · 8\nSlow: 4.5 ATR · 30 · 2 · 12\nVery slow: 6 ATR · 50 · 3 · 20\nCustom: القيم في الخانات التالية")
+i_tlMultC = input.float(4.5, "Custom: trail distance (× ATR)", minval = 1.0, step = 0.25, group = GT,
+     tooltip = "بُعد خط الاتجاه عن السعر. اللون لا يتغير إلا إذا أغلق السعر خلف هذا الخط.")
+i_tlStrC  = input.int(30, "Custom: range breakout length (bars)", minval = 3, maxval = 300, group = GT,
+     tooltip = "شرط إضافي للتغيّر: إغلاق يكسر أدنى قاع (أو أعلى قمة) لهذا العدد من الشموع. هذا ما يمنع التقلّب داخل النطاق العرضي.")
+i_tlConfC = input.int(2, "Custom: confirming closes", minval = 1, maxval = 10, inline = "tlc", group = GT)
+i_tlHoldC = input.int(12, "min bars between flips", minval = 0, maxval = 500, inline = "tlc", group = GT)
+i_tlHtf   = input.bool(false, "Block a flip while HTF 1 still opposes it", group = GT,
+     tooltip = "أبطأ وأكثر ثباتًا: لا يتحول اللون إلى هابط ما دام HTF1 صاعدًا (والعكس).")
+i_tlGate  = input.bool(true, "Signals only in the trend-lock direction", group = GT,
+     tooltip = "إشارات الشراء تظهر فقط والسحابة خضراء، والبيع فقط وهي حمراء.")
+i_tlLine  = input.bool(true, "Show trend-lock line", inline = "tlv", group = GT)
+i_tlMark  = input.bool(true, "Mark trend flips", inline = "tlv", group = GT)
+
+string G3 = "④ Engine A · Trend pullback"
 i_emaFast = input.int(9, "EMA trigger", minval = 2, inline = "e1", group = G3)
 i_emaMid  = input.int(21, "EMA value", minval = 3, inline = "e1", group = G3)
 i_emaSlow = input.int(50, "EMA trend", minval = 5, inline = "e2", group = G3)
@@ -58,12 +77,12 @@ i_extMax  = input.float(1.6, "Max distance from EMA value (× ATR)", minval = 0.
 i_stMult  = input.float(3.0, "Supertrend factor", minval = 0.5, step = 0.1, inline = "st", group = G3)
 i_stLen   = input.int(10, "length", minval = 2, inline = "st", group = G3)
 
-string G4 = "④ Engine B · Liquidity sweep"
+string G4 = "⑤ Engine B · Liquidity sweep"
 i_swing = input.int(5, "Swing pivot length", minval = 2, maxval = 20, group = G4)
 i_swWin = input.int(4, "Bars allowed to confirm after the sweep", minval = 0, maxval = 20, group = G4)
 i_eqTol = input.float(0.10, "Equal highs/lows tolerance (× ATR)", minval = 0.01, step = 0.01, group = G4)
 
-string G5 = "⑤ Filters · الفلاتر"
+string G5 = "⑥ Filters · الفلاتر"
 i_useRegime = input.bool(true, "Trend-quality filter (Engine A)", inline = "rg", group = G5,
      tooltip = "المحرك A لا يعمل إلا إذا كان ADX فوق الحد أو كانت الحركة فعّالة (Efficiency Ratio ≥ 0.25). يستبعد التذبذب العرضي.")
 i_adxMin    = input.int(20, "ADX ≥", minval = 5, maxval = 60, inline = "rg", group = G5)
@@ -76,7 +95,7 @@ i_tz        = input.string("America/New_York", "Session time zone", group = G5)
 i_sess1     = input.session("0200-0500", "Session 1 (London)", group = G5)
 i_sess2     = input.session("0700-1100", "Session 2 (New York)", group = G5)
 
-string G6 = "⑥ Risk & trade management · إدارة الصفقة"
+string G6 = "⑦ Risk & trade management · إدارة الصفقة"
 i_slMode  = input.string("Structure", "Stop-loss mode", options = ["Structure", "ATR"], group = G6,
      tooltip = "Structure: خلف قاع/قمة التراجع أو خلف ذيل سحب السيولة + هامش.\nATR: مسافة ثابتة = ATR × المضاعف.")
 i_slLook  = input.int(5, "Structure lookback (bars)", minval = 2, maxval = 30, group = G6)
@@ -96,14 +115,14 @@ i_reentry = input.bool(true, "Allow a new signal once TP1 is secured (closes the
 i_rev     = input.bool(true, "Opposite signal closes and reverses the trade", group = G6)
 i_maxBars = input.int(0, "Time stop: close after N bars (0 = off)", minval = 0, group = G6)
 
-string G7 = "⑦ Visuals · المظهر"
+string G7 = "⑧ Visuals · المظهر"
 i_showLv  = input.bool(true, "Show entry / SL / TP levels", group = G7)
 i_keep    = input.bool(true, "Keep levels of closed trades", group = G7)
 i_ext     = input.int(10, "Level label offset (bars)", minval = 1, maxval = 60, group = G7)
-i_cloud   = input.bool(true, "Trend cloud (EMA value ↔ EMA trend)", group = G7)
+i_cloud   = input.bool(true, "Trend cloud (colored by the trend lock)", group = G7)
 i_showBas = input.bool(false, "EMA base line", inline = "ln", group = G7)
 i_showVw  = input.bool(false, "VWAP", inline = "ln", group = G7)
-i_barCol  = input.bool(true, "Color bars by trend state", group = G7)
+i_barCol  = input.bool(true, "Color bars by the trend lock", group = G7)
 i_dash    = input.bool(true, "Dashboard", inline = "ds", group = G7)
 i_pos     = input.string("Top right", "", options = ["Top right", "Top left", "Bottom right", "Bottom left", "Middle right"], inline = "ds", group = G7)
 i_dsz     = input.string("Small", "", options = ["Tiny", "Small", "Normal"], inline = "ds", group = G7)
@@ -113,7 +132,7 @@ i_cEn     = input.color(#8A93A6, "Entry", inline = "c2", group = G7)
 i_cSL     = input.color(#F0466B, "SL", inline = "c2", group = G7)
 i_cTP     = input.color(#2D8CFF, "TP", inline = "c2", group = G7)
 
-string G8 = "⑧ Alerts · التنبيهات"
+string G8 = "⑨ Alerts · التنبيهات"
 i_json = input.bool(false, "alert() message as JSON (webhook / bots)", group = G8)
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -406,6 +425,92 @@ float hi5    = ta.highest(high, 5)
 float rngMid = (ta.highest(high, 50) + ta.lowest(low, 50)) / 2
 
 // ════════════════════════════════════════════════════════════════════════════
+// 3.b) قفل الاتجاه (Trend Lock) — حالة اتجاه ثابتة لا تتقلّب في الحركة العرضية
+//   الاتجاه لا ينقلب إلا إذا اجتمعت ثلاثة شروط عند إغلاق الشمعة:
+//     1) عدد من الإغلاقات المتتالية خلف خط التتبّع العريض (ATR طويل لا ينكمش في العرضي)
+//     2) إغلاق يكسر قاع/قمة النطاق الأخير (كسر هيكل حقيقي لا مجرد انجراف)
+//     3) مرور حد أدنى من الشموع منذ آخر انقلاب
+// ════════════════════════════════════════════════════════════════════════════
+float tlMult = i_tlMode == "Fast" ? 2.5 : i_tlMode == "Balanced" ? 3.5 : i_tlMode == "Slow" ? 4.5 : i_tlMode == "Very slow" ? 6.0 : i_tlMultC
+int   tlStr  = i_tlMode == "Fast" ? 10 : i_tlMode == "Balanced" ? 20 : i_tlMode == "Slow" ? 30 : i_tlMode == "Very slow" ? 50 : i_tlStrC
+int   tlConf = i_tlMode == "Fast" ? 1 : i_tlMode == "Balanced" ? 2 : i_tlMode == "Slow" ? 2 : i_tlMode == "Very slow" ? 3 : i_tlConfC
+int   tlHold = i_tlMode == "Fast" ? 3 : i_tlMode == "Balanced" ? 8 : i_tlMode == "Slow" ? 12 : i_tlMode == "Very slow" ? 20 : i_tlHoldC
+
+float tlAtr = math.max(ta.atr(50), nz(ta.atr(200)) * 0.85)
+float tlSrc = ta.ema(hl2, 5)
+float tlUp  = tlSrc + tlMult * tlAtr
+float tlDn  = tlSrc - tlMult * tlAtr
+float donHi = ta.highest(high, tlStr)[1]
+float donLo = ta.lowest(low, tlStr)[1]
+
+var int   tlDir   = 0       // 1 صاعد، -1 هابط
+var float tlLine  = na      // خط التتبّع: تحت السعر في الصعود وفوقه في الهبوط
+var int   tlBar   = na      // شمعة آخر انقلاب
+var float tlPx    = na      // سعر الإغلاق عند آخر انقلاب
+var int   tlCnt   = 0       // إغلاقات متتالية خلف الخط
+var bool  tlBrk   = false   // هل كُسر النطاق خلال هذه السلسلة
+var int   tlFlips = 0
+// نتيجة الدخول مع كل تغيّر لون والخروج عند التغيّر التالي (بدون سبريد)
+var int   fN   = 0
+var int   fW   = 0
+var float fSum = 0.0
+bool tlFlipUp = false
+bool tlFlipDn = false
+
+if barstate.isconfirmed and not na(tlAtr) and not na(donHi) and not na(emaSlow)
+    if tlDir == 0
+        tlDir  := close >= emaSlow ? 1 : -1
+        tlLine := tlDir == 1 ? tlDn : tlUp
+        tlBar  := bar_index
+        tlPx   := close
+    else if tlDir == 1
+        tlLine := math.max(tlLine, tlDn)
+        if close < tlLine
+            tlCnt := tlCnt + 1
+            if close < donLo
+                tlBrk := true
+        else
+            tlCnt := 0
+            tlBrk := false
+        if tlCnt >= tlConf and tlBrk and bar_index - tlBar >= tlHold and (not i_tlHtf or h1 != 1)
+            if tlFlips > 0
+                float leg = (close - tlPx) / tlPx * 100
+                fN   := fN + 1
+                fW   := fW + (leg > 0 ? 1 : 0)
+                fSum := fSum + leg
+            tlDir    := -1
+            tlLine   := tlUp
+            tlBar    := bar_index
+            tlPx     := close
+            tlCnt    := 0
+            tlBrk    := false
+            tlFlips  := tlFlips + 1
+            tlFlipDn := true
+    else
+        tlLine := math.min(tlLine, tlUp)
+        if close > tlLine
+            tlCnt := tlCnt + 1
+            if close > donHi
+                tlBrk := true
+        else
+            tlCnt := 0
+            tlBrk := false
+        if tlCnt >= tlConf and tlBrk and bar_index - tlBar >= tlHold and (not i_tlHtf or h1 != -1)
+            if tlFlips > 0
+                float leg = (tlPx - close) / tlPx * 100
+                fN   := fN + 1
+                fW   := fW + (leg > 0 ? 1 : 0)
+                fSum := fSum + leg
+            tlDir    := 1
+            tlLine   := tlDn
+            tlBar    := bar_index
+            tlPx     := close
+            tlCnt    := 0
+            tlBrk    := false
+            tlFlips  := tlFlips + 1
+            tlFlipUp := true
+
+// ════════════════════════════════════════════════════════════════════════════
 // 4) المحرك A — ارتداد مع الاتجاه
 // ════════════════════════════════════════════════════════════════════════════
 bool upTr = emaMid > emaSlow and close > emaSlow
@@ -505,10 +610,13 @@ bool sideS    = i_side != "Long only"
 bool extL     = close - emaMid <= i_extMax * atr
 bool extS     = emaMid - close <= i_extMax * atr
 
-bool okAL = i_engA and trigAL and extL and spikeOK and volatOK and regimeOK and htfL and sideL
-bool okAS = i_engA and trigAS and extS and spikeOK and volatOK and regimeOK and htfS and sideS
-bool okBL = i_engB and trigBL and spikeOK and volatOK and htfL and sideL
-bool okBS = i_engB and trigBS and spikeOK and volatOK and htfS and sideS
+bool lockL    = not i_tlGate or tlDir == 1
+bool lockS    = not i_tlGate or tlDir == -1
+
+bool okAL = i_engA and trigAL and extL and spikeOK and volatOK and regimeOK and htfL and sideL and lockL
+bool okAS = i_engA and trigAS and extS and spikeOK and volatOK and regimeOK and htfS and sideS and lockS
+bool okBL = i_engB and trigBL and spikeOK and volatOK and htfL and sideL and lockL
+bool okBS = i_engB and trigBS and spikeOK and volatOK and htfS and sideS and lockS
 
 // ════════════════════════════════════════════════════════════════════════════
 // 7) محرك النقاط (0-100)
@@ -723,15 +831,24 @@ if evTP1 or evTP2 or evTP3 or evSL or evBE
 // 9) الرسم على الشارت
 // ════════════════════════════════════════════════════════════════════════════
 color cNeu     = #787B86
-color trendCol = upTr ? i_cBull : dnTr ? i_cBear : cNeu
+color trendCol = tlDir == 1 ? i_cBull : tlDir == -1 ? i_cBear : cNeu
 pMid  = plot(i_cloud ? emaMid : na, "EMA value", color = color.new(trendCol, 35), linewidth = 1)
 pSlow = plot(i_cloud ? emaSlow : na, "EMA trend", color = color.new(trendCol, 55), linewidth = 1)
 fill(pMid, pSlow, color = color.new(trendCol, 86), title = "Trend cloud")
 plot(i_showBas ? emaBase : na, "EMA base", color = color.new(#F5A623, 20), linewidth = 2)
 plot(i_showVw and vwOK ? vwV : na, "VWAP", color = color.new(#B388FF, 10), linewidth = 1)
 
-color barC = upTr and h1 >= 0 ? i_cBull : dnTr and h1 <= 0 ? i_cBear : cNeu
-barcolor(i_barCol ? barC : na, title = "Trend bar color")
+barcolor(i_barCol ? trendCol : na, title = "Trend bar color")
+
+// خط قفل الاتجاه: اللون لا يتغير إلا بإغلاق مؤكَّد خلفه مع كسر النطاق
+plot(i_tlLine and tlDir == 1 ? tlLine : na, "Trend-lock line (bull)", color = i_cBull, linewidth = 2, style = plot.style_linebr)
+plot(i_tlLine and tlDir == -1 ? tlLine : na, "Trend-lock line (bear)", color = i_cBear, linewidth = 2, style = plot.style_linebr)
+if i_tlMark and tlFlipUp
+    label.new(bar_index, tlLine, L("اتجاه صاعد", "TREND UP"), style = label.style_label_up, color = color.new(i_cBull, 15), textcolor = color.white, size = size.tiny)
+if i_tlMark and tlFlipDn
+    label.new(bar_index, tlLine, L("اتجاه هابط", "TREND DOWN"), style = label.style_label_down, color = color.new(i_cBear, 15), textcolor = color.white, size = size.tiny)
+if tlFlipUp or tlFlipDn
+    alert("APEX " + syminfo.ticker + " [" + timeframe.period + "]: trend lock turned " + (tlFlipUp ? "BULLISH" : "BEARISH") + " @ " + f_px(close), alert.freq_once_per_bar_close)
 
 // أحداث الصفقة
 plotshape(evTP1 ? pxEvTP1 : na, "TP1 hit", shape.circle, location.absolute, color.new(i_cTP, 30), size = size.tiny)
@@ -758,7 +875,7 @@ string dSz  = i_dsz == "Tiny" ? size.tiny : i_dsz == "Small" ? size.small : size
 color  cRow = color.new(#0E1525, 6)
 color  cKey = #B4BFD6
 color  cVal = #FFFFFF
-var table tb = table.new(dPos, 2, 21, bgcolor = cRow, frame_color = #2A3654, frame_width = 1, border_color = color.new(#2A3654, 55), border_width = 1)
+var table tb = table.new(dPos, 2, 22, bgcolor = cRow, frame_color = #2A3654, frame_width = 1, border_color = color.new(#2A3654, 55), border_width = 1)
 
 f_row(int r, string k, string v, color c) =>
     table.cell(tb, 0, r, k, text_color = cKey, text_size = dSz, text_halign = text.align_left, bgcolor = cRow)
@@ -776,7 +893,8 @@ string h1Name = f_tf(htf1)
 string h2Name = f_tf(htf2)
 
 if i_dash and barstate.islast
-    int    loc     = upTr ? 1 : dnTr ? -1 : 0
+    float  legNow  = tlDir != 0 and not na(tlPx) ? tlDir * (close - tlPx) / tlPx * 100 : 0.0
+    string lockTxt = f_biasTxt(tlDir) + (na(tlBar) ? "" : " · " + str.tostring(bar_index - tlBar) + L(" شمعة · ", " bars · ") + (legNow >= 0 ? "+" : "") + str.tostring(legNow, "#.##") + "%")
     bool   quiet   = atr < atrBase * i_minVol
     bool   trendy  = adx >= i_adxMin or er >= 0.25
     string regTxt  = quiet ? L("هادئ جدًا", "Quiet") : trendy ? L("اتجاهي", "Trending") : L("عرضي", "Ranging")
@@ -789,7 +907,7 @@ if i_dash and barstate.islast
     f_head(0, "APEX Scalper Pro", color.new(#2D5BFF, 0))
     f_row(1, L("اتجاه ", "Bias ") + h1Name, f_biasTxt(h1), f_biasCol(h1))
     f_row(2, L("اتجاه ", "Bias ") + h2Name, f_biasTxt(h2), f_biasCol(h2))
-    f_row(3, L("اتجاه الشارت", "Chart trend"), f_biasTxt(loc), f_biasCol(loc))
+    f_row(3, L("قفل الاتجاه", "Trend lock"), lockTxt, f_biasCol(tlDir))
     f_row(4, L("حالة السوق", "Regime"), regTxt + " · ADX " + str.tostring(adx, "#"), regCol)
     f_row(5, "RSI", str.tostring(rsi, "#.#"), rsi >= 55 ? i_cBull : rsi <= 45 ? i_cBear : cVal)
     f_row(6, L("الحجم النسبي", "Relative volume"), hasVol ? "×" + str.tostring(relVol, "#.##") : "—", relVol >= 1.5 ? i_cBull : cVal)
@@ -814,6 +932,7 @@ if i_dash and barstate.islast
     f_row(18, L("معامل الربح · أقصى تراجع", "Profit factor · max drawdown"), pfTxt + " · " + str.tostring(S.maxDD, "#.#") + " R", pfVal >= 1.3 ? i_cBull : pfVal >= 1.0 ? cVal : i_cBear)
     f_row(19, L("المحرك A · B", "Engine A · B"), f_pct(S.wA, S.nA) + " (" + str.tostring(S.nA) + ") · " + f_pct(S.wB, S.nB) + " (" + str.tostring(S.nB) + ")", cVal)
     f_row(20, L("شراء · بيع", "Long · Short"), f_pct(S.wL, S.nL) + " (" + str.tostring(S.nL) + ") · " + f_pct(S.wS, S.nS) + " (" + str.tostring(S.nS) + ")", cVal)
+    f_row(21, L("الدخول مع تغيّر اللون", "Trading the color flips"), str.tostring(fN) + " · " + f_pct(fW, fN) + " · " + (fSum >= 0 ? "+" : "") + str.tostring(fSum, "#.##") + "%", fSum >= 0 ? i_cBull : i_cBear)
 
 // ════════════════════════════════════════════════════════════════════════════
 // 11) شروط التنبيه الجاهزة
@@ -821,6 +940,8 @@ if i_dash and barstate.islast
 alertcondition(buySig, "APEX BUY", 'APEX BUY {{ticker}} ({{interval}}) | Entry {{plot("Signal Entry")}} | SL {{plot("Signal SL")}} | TP1 {{plot("Signal TP1")}} | TP2 {{plot("Signal TP2")}} | TP3 {{plot("Signal TP3")}} | Score {{plot("Signal Score")}}')
 alertcondition(sellSig, "APEX SELL", 'APEX SELL {{ticker}} ({{interval}}) | Entry {{plot("Signal Entry")}} | SL {{plot("Signal SL")}} | TP1 {{plot("Signal TP1")}} | TP2 {{plot("Signal TP2")}} | TP3 {{plot("Signal TP3")}} | Score {{plot("Signal Score")}}')
 alertcondition(buySig or sellSig, "APEX Any signal", 'APEX signal {{ticker}} ({{interval}}) | Entry {{plot("Signal Entry")}} | SL {{plot("Signal SL")}} | TP1 {{plot("Signal TP1")}}')
+alertcondition(tlFlipUp, "APEX Trend turned bullish", "APEX {{ticker}} ({{interval}}): trend lock turned BULLISH")
+alertcondition(tlFlipDn, "APEX Trend turned bearish", "APEX {{ticker}} ({{interval}}): trend lock turned BEARISH")
 alertcondition(evTP1, "APEX TP1 hit", "APEX {{ticker}}: TP1 reached")
 alertcondition(evTP2, "APEX TP2 hit", "APEX {{ticker}}: TP2 reached")
 alertcondition(evTP3, "APEX TP3 hit", "APEX {{ticker}}: TP3 reached")
