@@ -1,0 +1,327 @@
+//@version=6
+// ════════════════════════════════════════════════════════════════════════════
+//  Fadi & Hussam · Gold Session Edge
+// ════════════════════════════════════════════════════════════════════════════
+//  نظامان زمنيّان للذهب (XAUUSD) خرجا من اختبار 40 فرضية هيكلية على أكثر من ست
+//  سنوات من بيانات الدقيقة (سبتمبر 2020 – أكتوبر 2026). كل الأوقات بتوقيت نيويورك.
+//
+//    الصفقة A · انجراف آسيا:  شراء عند افتتاح الجلسة 18:00 والخروج 22:00، من الاثنين
+//                             إلى الخميس. بلا وقف افتراضيًا (الخروج بالوقت).
+//    الصفقة F · عكس نيويورك:  عند 09:00 ندخل عكس حركة الساعة 08:00–09:00، بوقف وهدف
+//                             متساويين (1:1) = وحدة مخاطرة واحدة، والخروج 15:00
+//                             إن لم يُلمس أحدهما. من الاثنين إلى الجمعة.
+//
+//  نتيجة الاختبار بعد خصم سبريد 1 نقطة أساس (1R = وحدة المخاطرة ≈ 0.64% من السعر):
+//    A: 1276 صفقة · +0.069R للصفقة · 65% من الأشهر رابحة · 5 سنوات رابحة من 7
+//    F: 1504 صفقة · 52.8% فوز · +0.066R للصفقة · 65% من الأشهر · 7 سنوات من 7
+//    معًا: +30R في السنة · 73% من الأشهر رابحة (54 من 74) · 54% من الأيام رابحة
+//          أسوأ شهر −6.5R · أقصى تراجع 14R
+//
+//  ⚠️ هذه انحيازات إحصائية صغيرة وليست صفقات مضمونة. نصف الصفقات تقريبًا خاسر.
+//  الاختبار جرى على بيانات الذهب من Binance (PAXG و XAUUSDT) لا على OANDA، والنتيجة
+//  المستقبلية المتوقعة أقل من التاريخية لأن النظامين اختيرا من بين 40 فرضية.
+//  أداة مساعدة على القرار وليست نصيحة مالية. جرّب على حساب تجريبي أولًا.
+// ════════════════════════════════════════════════════════════════════════════
+indicator("Fadi & Hussam · Gold Session Edge", shorttitle = "FH Gold Sessions", overlay = true,
+     max_lines_count = 500, max_labels_count = 500)
+
+// ════════════════════════════════════════════════════════════════════════════
+// 0) الإعدادات
+// ════════════════════════════════════════════════════════════════════════════
+string G1 = "① General · عام"
+i_lang   = input.string("العربية", "Language · اللغة", options = ["العربية", "English"], group = G1)
+i_tz     = input.string("America/New_York", "Time zone of the sessions", group = G1,
+     tooltip = "كل الأوقات في المؤشر بتوقيت نيويورك، والتوقيت الصيفي يُحسب تلقائيًا. لا تغيّره إلا إذا كنت تعرف السبب.")
+i_volLen = input.int(20, "Usual daily move: average of |daily change| over (days)", minval = 5, maxval = 100, group = G1,
+     tooltip = "وحدة المخاطرة R في المؤشر مبنية على متوسط حركة الذهب اليومية المطلقة لآخر 20 يومًا. تُستخدم لمسافة الوقف والهدف ولقياس النتائج.")
+i_unitK  = input.float(0.85, "Risk unit 1R = usual daily move ×", minval = 0.2, maxval = 3.0, step = 0.05, group = G1,
+     tooltip = "الاختبار حسب الحركة اليومية على أيام تشمل عطلة نهاية الأسبوع، فكانت أصغر بنحو 17% من حسابها على شموع الوسيط اليومية. المعامل 0.85 يطابق وحدة الاختبار (حوالي 0.64% من السعر في المتوسط).")
+i_spread = input.float(0.0, "Your spread in price units (0 = ignore)", minval = 0.0, group = G1,
+     tooltip = "مثال للذهب: 0.30. يُخصم من نتيجة كل صفقة في اللوحة.")
+
+string G2 = "② Trade A · Asia drift (شراء افتتاح آسيا)"
+i_aOn    = input.bool(true, "Enable trade A", group = G2)
+i_aSess  = input.session("1800-2200", "Hold window (New York time)", group = G2,
+     tooltip = "الدخول شراءً عند أول شمعة في النافذة والخروج عند نهايتها. المختبَر: 18:00 إلى 22:00.")
+i_aSun   = input.bool(false, "Also trade the Sunday open", group = G2,
+     tooltip = "الافتراضي: من الاثنين إلى الخميس فقط. افتتاح الأحد لم يكن رابحًا في الاختبار، والسبريد فيه واسع.")
+i_aStop  = input.float(0.0, "Stop distance (× 1R, 0 = time exit only)", minval = 0.0, step = 0.25, group = G2,
+     tooltip = "في الاختبار، الوقف الضيق أضرّ بهذه الصفقة. الافتراضي بلا وقف والخروج بالوقت. إن أردت وقف طوارئ فضع 1.5 أو أكثر.")
+
+string G3 = "③ Trade F · New York fade (عكس أول ساعة نيويورك)"
+i_fOn    = input.bool(true, "Enable trade F", group = G3)
+i_fMeas  = input.session("0800-0900", "Measured window (New York time)", group = G3,
+     tooltip = "الساعة التي تُقاس حركتها. الصفقة تدخل عكسها. المختبَر: 08:00 إلى 09:00.")
+i_fSess  = input.session("0900-1500", "Trade window (New York time)", group = G3,
+     tooltip = "الدخول عند أول شمعة في النافذة والخروج عند نهايتها إن لم يُلمس الوقف أو الهدف. المختبَر: 09:00 إلى 15:00. الأثر حسّاس للتوقيت: الدخول بعد 09:00 بربع ساعة يضعفه بوضوح.")
+i_fSL    = input.float(1.0, "Stop (× 1R)", minval = 0.1, step = 0.25, inline = "f", group = G3)
+i_fTP    = input.float(1.0, "Target (×)", minval = 0.1, step = 0.25, inline = "f", group = G3)
+
+string G4 = "④ Visuals · المظهر"
+i_bg     = input.bool(true, "Shade the session windows", group = G4)
+i_lines  = input.bool(true, "Show entry / stop / target lines", group = G4)
+i_dash   = input.bool(true, "Dashboard", inline = "d", group = G4)
+i_pos    = input.string("Top right", "", options = ["Top right", "Top left", "Bottom right", "Bottom left"], inline = "d", group = G4)
+i_dsz    = input.string("Small", "", options = ["Tiny", "Small", "Normal"], inline = "d", group = G4)
+i_cBull  = input.color(#00B894, "Buy", inline = "c", group = G4)
+i_cBear  = input.color(#F0466B, "Sell", inline = "c", group = G4)
+i_cTP    = input.color(#2D8CFF, "Target", inline = "c", group = G4)
+
+// ════════════════════════════════════════════════════════════════════════════
+// 1) دوال مساعدة وحالة النظام
+// ════════════════════════════════════════════════════════════════════════════
+L(string ar, string en) => i_lang == "English" ? en : ar
+f_px(float p) => str.tostring(p, format.mintick)
+f_r(float r) => (r >= 0 ? "+" : "") + str.tostring(r, "#.##") + "R"
+f_pct(int a, int b) => b > 0 ? str.tostring(100.0 * a / b, "#.#") + "%" : "—"
+
+type Sys
+    // الصفقة القائمة
+    int   dir   = 0
+    int   kind  = 0
+    int   t0    = 0
+    float entry
+    float sl
+    float tp
+    float unit
+    line  lE
+    line  lS
+    line  lT
+    // الإحصاءات
+    int   nA    = 0
+    int   wA    = 0
+    float rA    = 0.0
+    int   nF    = 0
+    int   wF    = 0
+    float rF    = 0.0
+    float eq    = 0.0
+    float peak  = 0.0
+    float dd    = 0.0
+    float moR   = 0.0
+    int   moN   = 0
+    int   months = 0
+    int   mGreen = 0
+    float worstMo = 0.0
+    float dayR  = 0.0
+    int   dayN  = 0
+    int   days  = 0
+    int   dGreen = 0
+    float lastR
+
+// فتح صفقة: kind 1 = آسيا، 2 = عكس نيويورك. الوحدة = متوسط الحركة اليومية بالسعر
+method enter(Sys s, int kind, int d, float px, float unit, float slK, float tpK) =>
+    s.dir   := d
+    s.kind  := kind
+    s.t0    := time
+    s.entry := px
+    s.unit  := unit
+    s.sl    := slK > 0 ? px - d * slK * unit : na
+    s.tp    := tpK > 0 ? px + d * tpK * unit : na
+    color cSide = d == 1 ? i_cBull : i_cBear
+    string nm = kind == 1 ? L("شراء · آسيا", "BUY · Asia") : d == 1 ? L("شراء · عكس نيويورك", "BUY · NY fade") : L("بيع · عكس نيويورك", "SELL · NY fade")
+    string tip = nm + "\n" + L("دخول ", "Entry ") + f_px(px) + (slK > 0 ? "\n" + L("وقف ", "Stop ") + f_px(s.sl) : "\n" + L("بلا وقف، الخروج بالوقت", "No stop, time exit")) + (tpK > 0 ? "\n" + L("هدف ", "Target ") + f_px(s.tp) : "") + "\n1R = " + f_px(unit)
+    if d == 1
+        label.new(bar_index, low, nm, yloc = yloc.belowbar, style = label.style_label_up, color = cSide, textcolor = color.white, size = size.small, tooltip = tip)
+    else
+        label.new(bar_index, high, nm, yloc = yloc.abovebar, style = label.style_label_down, color = cSide, textcolor = color.white, size = size.small, tooltip = tip)
+    if i_lines
+        s.lE := line.new(bar_index, px, bar_index + 1, px, color = color.new(#8A93A6, 0), style = line.style_dashed)
+        s.lS := slK > 0 ? line.new(bar_index, s.sl, bar_index + 1, s.sl, color = i_cBear, width = 2) : na
+        s.lT := tpK > 0 ? line.new(bar_index, s.tp, bar_index + 1, s.tp, color = i_cTP, width = 2) : na
+    true
+
+// إغلاق الصفقة عند px وتسجيل نتيجتها بوحدة R بعد خصم السبريد
+method book(Sys s, float px) =>
+    float r = (s.dir * (px - s.entry) - i_spread) / s.unit
+    if s.kind == 1
+        s.nA := s.nA + 1
+        s.wA := s.wA + (r > 0 ? 1 : 0)
+        s.rA := s.rA + r
+    else
+        s.nF := s.nF + 1
+        s.wF := s.wF + (r > 0 ? 1 : 0)
+        s.rF := s.rF + r
+    s.eq   := s.eq + r
+    s.peak := math.max(s.peak, s.eq)
+    s.dd   := math.max(s.dd, s.peak - s.eq)
+    s.moR  := s.moR + r
+    s.moN  := s.moN + 1
+    s.dayR := s.dayR + r
+    s.dayN := s.dayN + 1
+    s.lastR := r
+    line.set_x2(s.lE, bar_index)
+    line.set_x2(s.lS, bar_index)
+    line.set_x2(s.lT, bar_index)
+    label.new(bar_index, px, f_r(r), style = label.style_label_left, color = color.new(r > 0 ? i_cBull : i_cBear, 25), textcolor = color.white, size = size.tiny)
+    s.dir := 0
+    r
+
+// ════════════════════════════════════════════════════════════════════════════
+// 2) النوافذ الزمنية ووحدة المخاطرة
+// ════════════════════════════════════════════════════════════════════════════
+// أيام الجلسات: 1 = الأحد … 7 = السبت
+string aDays = i_aSun ? "12345" : "2345"
+bool inA = not na(time(timeframe.period, i_aSess + ":" + aDays, i_tz))
+bool inM = not na(time(timeframe.period, i_fMeas + ":23456", i_tz))
+bool inF = not na(time(timeframe.period, i_fSess + ":23456", i_tz))
+bool aStart = inA and not inA[1]
+bool mStart = inM and not inM[1]
+bool fStart = inF and not inF[1]
+
+// متوسط الحركة اليومية المطلقة (كنسبة من السعر) من الشموع اليومية المُغلقة فقط
+f_usual(int len) =>
+    float x = ta.sma(math.abs(close / close[1] - 1), len)
+    x[1]
+float uFrac = nz(request.security(syminfo.tickerid, "D", f_usual(i_volLen), lookahead = barmerge.lookahead_on)) * i_unitK
+
+bool tfOK  = timeframe.isintraday and timeframe.in_seconds() <= 3600
+bool ready = tfOK and uFrac > 0
+
+int  dNow   = dayofmonth(time, i_tz)
+int  mNow   = month(time, i_tz)
+bool newDay = dNow != dNow[1]
+bool newMo  = mNow != mNow[1]
+
+// ════════════════════════════════════════════════════════════════════════════
+// 3) منطق الصفقات
+// ════════════════════════════════════════════════════════════════════════════
+var Sys   S     = Sys.new()
+var float p8    = na      // السعر عند بداية الساعة المقاسة
+var int   p8Day = na
+
+bool  evBuyA  = false
+bool  evBuyF  = false
+bool  evSellF = false
+bool  evExit  = false
+float exitR   = na
+
+// تدوير اليوم والشهر (قبل أي صفقة جديدة)
+if newDay
+    if S.dayN > 0
+        S.days   := S.days + 1
+        S.dGreen := S.dGreen + (S.dayR > 0 ? 1 : 0)
+    S.dayR := 0.0
+    S.dayN := 0
+if newMo
+    if S.moN > 0
+        S.months  := S.months + 1
+        S.mGreen  := S.mGreen + (S.moR > 0 ? 1 : 0)
+        S.worstMo := math.min(S.worstMo, S.moR)
+    S.moR := 0.0
+    S.moN := 0
+
+// (أ) الخروج بالوقت: عند افتتاح أول شمعة بعد نهاية النافذة
+if S.dir != 0
+    bool timeUp = (S.kind == 1 and not inA) or (S.kind == 2 and not inF) or time - S.t0 > 14 * 3600000
+    if timeUp
+        exitR  := S.book(open)
+        evExit := true
+
+if mStart
+    p8    := open
+    p8Day := dNow
+
+// (ب) الدخول عند افتتاح أول شمعة في النافذة
+if ready and S.dir == 0
+    float unit = uFrac * open
+    if i_aOn and aStart
+        S.enter(1, 1, open, unit, i_aStop, 0.0)
+        evBuyA := true
+    else if i_fOn and fStart and not na(p8) and p8Day == dNow and open != p8
+        int side = open > p8 ? -1 : 1
+        S.enter(2, side, open, unit, i_fSL, i_fTP)
+        evBuyF  := side == 1
+        evSellF := side == -1
+
+// (ج) الوقف والهدف على هذه الشمعة (تشمل شمعة الدخول). إذا لُمسا معًا يُحتسب الوقف
+if S.dir != 0
+    bool hitSL = not na(S.sl) and (S.dir == 1 ? low <= S.sl : high >= S.sl)
+    bool hitTP = not na(S.tp) and (S.dir == 1 ? high >= S.tp : low <= S.tp)
+    if hitSL
+        exitR  := S.book(S.dir == 1 ? math.min(S.sl, open) : math.max(S.sl, open))
+        evExit := true
+    else if hitTP
+        exitR  := S.book(S.tp)
+        evExit := true
+    else
+        line.set_x2(S.lE, bar_index + 1)
+        line.set_x2(S.lS, bar_index + 1)
+        line.set_x2(S.lT, bar_index + 1)
+
+// ════════════════════════════════════════════════════════════════════════════
+// 4) الرسم والتنبيهات
+// ════════════════════════════════════════════════════════════════════════════
+bgcolor(i_bg and inA ? color.new(i_cBull, 93) : na, title = "Asia window")
+bgcolor(i_bg and inM ? color.new(#F5A623, 90) : na, title = "Measured hour")
+bgcolor(i_bg and inF ? color.new(i_cTP, 95) : na, title = "NY fade window")
+plot(not na(p8) and p8Day == dNow and (inM or inF) ? p8 : na, "08:00 reference price", color = color.new(#F5A623, 20), style = plot.style_linebr)
+
+plot(evBuyA or evBuyF or evSellF ? S.entry : na, "Signal Entry", display = display.none)
+plot(evBuyA or evBuyF or evSellF ? S.sl : na, "Signal Stop", display = display.none)
+plot(evBuyA or evBuyF or evSellF ? S.tp : na, "Signal Target", display = display.none)
+plot(exitR, "Closed trade R", display = display.none)
+
+alertcondition(evBuyA, "FH · BUY Asia drift", 'FH Gold: BUY (Asia drift) {{ticker}} @ {{plot("Signal Entry")}} — exit at the end of the window')
+alertcondition(evBuyF, "FH · BUY NY fade", 'FH Gold: BUY (NY fade) {{ticker}} @ {{plot("Signal Entry")}} | SL {{plot("Signal Stop")}} | TP {{plot("Signal Target")}}')
+alertcondition(evSellF, "FH · SELL NY fade", 'FH Gold: SELL (NY fade) {{ticker}} @ {{plot("Signal Entry")}} | SL {{plot("Signal Stop")}} | TP {{plot("Signal Target")}}')
+alertcondition(evBuyA or evBuyF or evSellF, "FH · Any entry", 'FH Gold: new trade on {{ticker}} @ {{plot("Signal Entry")}}')
+alertcondition(evExit, "FH · Trade closed", 'FH Gold: trade closed on {{ticker}}, result {{plot("Closed trade R")}} R')
+
+// ════════════════════════════════════════════════════════════════════════════
+// 5) لوحة المعلومات
+// ════════════════════════════════════════════════════════════════════════════
+string dPos = i_pos == "Top right" ? position.top_right : i_pos == "Top left" ? position.top_left : i_pos == "Bottom right" ? position.bottom_right : position.bottom_left
+string dSz  = i_dsz == "Tiny" ? size.tiny : i_dsz == "Small" ? size.small : size.normal
+color  cRow = color.new(#0E1525, 6)
+color  cKey = #B4BFD6
+color  cVal = #FFFFFF
+color  cNeu = #787B86
+var table tb = table.new(dPos, 2, 16, bgcolor = cRow, frame_color = #2A3654, frame_width = 1, border_color = color.new(#2A3654, 55), border_width = 1)
+
+f_row(int r, string k, string v, color c) =>
+    table.cell(tb, 0, r, k, text_color = cKey, text_size = dSz, text_halign = text.align_left, bgcolor = cRow)
+    table.cell(tb, 1, r, v, text_color = c, text_size = dSz, text_halign = text.align_right, bgcolor = cRow)
+
+f_head(int r, string k, color bg) =>
+    table.cell(tb, 0, r, k, text_color = color.white, text_size = dSz, text_halign = text.align_center, bgcolor = bg)
+    table.merge_cells(tb, 0, r, 1, r)
+
+if i_dash and barstate.islast
+    int    nAll   = S.nA + S.nF
+    float  rAll   = S.rA + S.rF
+    float  unitNow = uFrac * close
+    float  liveR  = S.dir != 0 ? (S.dir * (close - S.entry) - i_spread) / S.unit : 0.0
+    bool   p8ok   = not na(p8) and p8Day == dNow
+    float  mvPct  = p8ok ? (close / p8 - 1) * 100 : 0.0
+    string nowTxt = not tfOK ? L("استخدم فريم ساعة أو أقل", "Use a 1h chart or lower") : S.dir != 0 ? (S.kind == 1 ? L("صفقة آسيا قائمة", "Asia trade open") : L("صفقة نيويورك قائمة", "NY trade open")) : inM ? L("قياس الساعة 08–09", "Measuring 08–09") : L("انتظار", "Waiting")
+    string planTxt = inM and p8ok ? (mvPct > 0 ? L("الخطة عند 09:00: بيع", "Plan at 09:00: SELL") : mvPct < 0 ? L("الخطة عند 09:00: شراء", "Plan at 09:00: BUY") : "—") + " (" + (mvPct >= 0 ? "+" : "") + str.tostring(mvPct, "#.##") + "%)" : "—"
+
+    f_head(0, "Fadi & Hussam · Gold Session Edge", color.new(#2D5BFF, 0))
+    f_row(1, L("الحالة", "Status"), nowTxt, tfOK ? cVal : #F5A623)
+    f_row(2, L("أول ساعة نيويورك", "NY first hour"), planTxt, inM and mvPct > 0 ? i_cBear : inM and mvPct < 0 ? i_cBull : cNeu)
+    f_row(3, L("وحدة المخاطرة 1R", "Risk unit 1R"), f_px(unitNow) + " (" + str.tostring(uFrac * 100, "#.##") + "%)", cVal)
+    if S.dir != 0
+        f_row(4, (S.dir == 1 ? L("شراء", "LONG") : L("بيع", "SHORT")) + " @ " + f_px(S.entry), f_r(liveR), liveR >= 0 ? i_cBull : i_cBear)
+        f_row(5, L("وقف · هدف", "Stop · target"), (na(S.sl) ? L("بالوقت", "time") : f_px(S.sl)) + " · " + (na(S.tp) ? L("بالوقت", "time") : f_px(S.tp)), cVal)
+    else
+        f_row(4, L("لا توجد صفقة", "No open trade"), "—", cNeu)
+        f_row(5, L("وقف · هدف", "Stop · target"), "—", cNeu)
+
+    f_head(6, L("النتائج على هذا الشارت", "Results on this chart") + (i_spread > 0 ? L(" (بعد السبريد)", " (after spread)") : L(" (بدون سبريد)", " (no spread)")), color.new(#1B2740, 0))
+    f_row(7, L("A آسيا: صفقات · فوز · R", "A Asia: trades · win · R"), str.tostring(S.nA) + " · " + f_pct(S.wA, S.nA) + " · " + f_r(S.rA), S.rA >= 0 ? i_cBull : i_cBear)
+    f_row(8, L("F نيويورك: صفقات · فوز · R", "F NY fade: trades · win · R"), str.tostring(S.nF) + " · " + f_pct(S.wF, S.nF) + " · " + f_r(S.rF), S.rF >= 0 ? i_cBull : i_cBear)
+    f_row(9, L("المجموع · متوسط الصفقة", "Total · per trade"), f_r(rAll) + " · " + (nAll > 0 ? str.tostring(rAll / nAll, "#.###") : "—"), rAll >= 0 ? i_cBull : i_cBear)
+    f_row(10, L("أشهر رابحة", "Winning months"), f_pct(S.mGreen, S.months) + L(" من ", " of ") + str.tostring(S.months), cVal)
+    f_row(11, L("أيام رابحة", "Winning days"), f_pct(S.dGreen, S.days) + L(" من ", " of ") + str.tostring(S.days), cVal)
+    f_row(12, L("هذا الشهر · اليوم", "This month · today"), f_r(S.moR) + " · " + f_r(S.dayR), S.moR >= 0 ? i_cBull : i_cBear)
+    f_row(13, L("أسوأ شهر · أقصى تراجع", "Worst month · max drawdown"), f_r(S.worstMo) + " · " + str.tostring(S.dd, "#.#") + "R", cVal)
+    f_head(14, L("المتوقَّع من الاختبار: +0.07R للصفقة، 73% أشهر رابحة", "Backtest reference: +0.07R per trade, 73% winning months"), color.new(#1B2740, 0))
+    f_head(15, L("انحياز إحصائي صغير، لا صفقات مضمونة", "A small statistical edge, not guaranteed trades"), color.new(#1B2740, 0))
+
+// تنبيه ديناميكي كامل (اختر "Any alert() function call")
+if evBuyA or evBuyF or evSellF
+    string side = S.dir == 1 ? "BUY" : "SELL"
+    string kindTxt = S.kind == 1 ? "Asia drift" : "NY fade"
+    alert("FH Gold " + side + " (" + kindTxt + ") " + syminfo.ticker + " | Entry " + f_px(S.entry) + (na(S.sl) ? " | no stop, time exit" : " | SL " + f_px(S.sl)) + (na(S.tp) ? "" : " | TP " + f_px(S.tp)) + " | 1R = " + f_px(S.unit), alert.freq_once_per_bar)
+if evExit
+    alert("FH Gold " + syminfo.ticker + ": trade closed, result " + f_r(exitR), alert.freq_once_per_bar)
